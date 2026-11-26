@@ -1,0 +1,16 @@
+.gradle/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+.kotlin/
+*.hprof
+
+# 第六阶段：release 签名材料绝不入库
+*.jks
+*.keystore
+keystore.properties

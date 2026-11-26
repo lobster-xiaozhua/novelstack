@@ -476,7 +476,7 @@ novelstack/
 ├── web/                        ★ Vue 3 + Vite 控制台源码（base=/admin/，outDir=internal/adminui/dist）
 ├── scripts/demo-lifecycle.sh   ★ 临时目录里跑完导入→备份→演练→轮换→淘汰
 ├── imports/                    ★ 批量导入投递目录（compose 只读挂载为 /imports）
-├── docs/screenshots/           ★ 控制台实机截图
+├── docs/                       说明与截图目录（二进制截图仅在本地保留）
 ├── Dockerfile                  ★ 增加 RUNTIME_IMAGE 构建参数；预置可写 /tmp（演练需要）
 └── Makefile                    ★ backup / backup-verify / restore-drill / kek-rotate / kek-verify /
                                    import / cache-prune / cache-clear / web / demo-lifecycle
@@ -635,15 +635,15 @@ make build      # 产物被 go:embed 内嵌
 
 | 概览 | 加密健康度 |
 |---|---|
-| ![概览](docs/screenshots/admin-overview.png) | ![加密健康度](docs/screenshots/admin-kek.png) |
+| （截图略，本地 docs/screenshots/ 保留） | （截图略，本地 docs/screenshots/ 保留） |
 
 | 缓存管理（二次确认） | 审计（运维动作留痕） |
 |---|---|
-| ![缓存](docs/screenshots/admin-cache.png) | ![审计](docs/screenshots/admin-audit.png) |
+| （截图略，本地 docs/screenshots/ 保留） | （截图略，本地 docs/screenshots/ 保留） |
 
 | TTS 朗读 | 二次确认弹窗 |
 |---|---|
-| ![TTS](docs/screenshots/admin-tts.png) | ![确认](docs/screenshots/admin-cache-confirm.png) |
+| （截图略，本地 docs/screenshots/ 保留） | （截图略，本地 docs/screenshots/ 保留） |
 
 | 页面 | 内容 |
 |---|---|
@@ -889,7 +889,7 @@ App 得到 nsd_...（写入 SQLCipher 的 kv 表），此后所有请求带 Bear
 > 控制台「设备与配对」：有效/已撤销计数、设备列表（**只显示 `nsd_` 前缀**，库里只有 SHA-256）、
 > 一键撤销。撤销一台设备不影响其他设备与浏览器登录。
 >
-> ![设备与配对](docs/screenshots/admin-devices.png)
+> （截图略，本地 docs/screenshots/ 保留）
 
 ### 14.6 同步与离线缓存
 
@@ -1228,7 +1228,7 @@ make backup-list && make restore-drill PACKAGE=backups/<包名>
 
 > 控制台顶部健康横幅（黄色为 KEK 离线备份提醒；红色为三类运维告警）：
 >
-> ![系统健康横幅](docs/screenshots/admin-health.png)
+> （截图略，本地 docs/screenshots/ 保留）
 
 可选 webhook：设置 `BACKUP_ALERT_WEBHOOK` 后，告警**从无到有**时异步 POST 一条 JSON：
 
@@ -1412,6 +1412,15 @@ cd android && ./gradlew :androidApp:assembleDebug :shared:testDebugUnitTest
 | `android` | `./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug` | 不跑 release、不跑 lint |
 | `docker` | `docker build -t novelstack-ci .` | 不跑 compose up |
 
+> Gradle wrapper 的二进制 jar 在仓库中以 `android/gradle/wrapper/gradle-wrapper.jar.b64`
+> 文本副本保存，CI 先用 `base64 -d` 还原再运行 `./gradlew`；版本仍是 8.11.1，未升级。
+>
+> **已知约束**：通过 GitHub API 推送的文件统一为 `0644`，会丢失 `android/gradlew` 的
+> 可执行位，导致 CI 中 `./gradlew` 以 **exit code 126** 失败（android job 6s 即挂，
+> go/docker job 不受影响）。CI 的 `Restore Gradle wrapper jar` 步骤里已加
+> `chmod +x android/gradlew` 补回执行位。若改用本地 `git push`（能保留 `100755`），
+> 该 chmod 仍是幂等的，可保留。
+
 workflow 语法可用 PyYAML 解析校验；`GOFLAGS=-mod=readonly` 在 go job 的 env 中显式设置。
 
 ### 16.5 Docker 构建卫生（P5）
@@ -1421,3 +1430,120 @@ workflow 语法可用 PyYAML 解析校验；`GOFLAGS=-mod=readonly` 在 go job �
 根锚定保证 `internal/adminui/dist` 仍能进入构建上下文。
 Dockerfile 的运行时镜像为 `gcr.io/distroless/static-debian12:nonroot`（可用
 `RUNTIME_IMAGE` build-arg 覆盖），入口点 `/app/novelstack`、非 root 用户与 secret 挂载方式均未改动。
+
+## 17. 第七阶段：Android 播放体验生产化
+
+本阶段把第五阶段「能出声」的朗读能力升级为可长时间后台运行、可系统级控制、可定时、可续听的生产级播放链路。**不改动服务端与 EPUB 解析**；服务端仍只返回密文与元数据，解密在客户端内存完成。
+
+### 17.1 架构选型：为什么是 AudioTrack + MediaSession，而不是 ExoPlayer
+
+| 维度 | 本方案（AudioTrack + MediaSessionCompat + 前台服务） | ExoPlayer / Media3 |
+|---|---|---|
+| 输入形态 | `TtsController` 已在内存中产出连续 16-bit PCM，直接 `write()` 到 AudioTrack | 需要 DataSource/MediaSource 封装，缓存与渐进式下载引入落盘审计面 |
+| 落盘风险 | 无缓存、无临时文件；音频字节生命周期止于内存 | 默认 `SimpleCache` 会把媒体写入应用目录，需额外加固 |
+| 控制面 | MediaSessionCompat + MediaStyle 通知已覆盖播放/暂停/切章/锁屏 | 能力更强，但本项目不需要 DASH/HLS/DRM |
+| 依赖面 | 仅 `androidx.media:1.7.0` | 引入 media3-exoplayer 及传递依赖 |
+| 结论 | 契合「密文传输、内存解密、绝不落盘」的安全边界，代码量小 | 能力过剩，且增加缓存落盘审计负担 |
+
+### 17.2 数据流与安全边界
+
+```
+服务端 NSAC 密文片段（X-TTS-Stream: wav-segments）
+   │  HTTPS + 设备令牌
+   ▼
+TtsController：RSA 解包音频 DEK ──> AES-GCM open（AAD 绑定片段 key）
+   │  解密结果仅在内存
+   ▼
+WavSegmentStream：逐段剥离 RIFF/fmt/data 头 ──> 连续 PCM（仅 16-bit PCM）
+   │  audioKey / ct / wav / pcm 用完即 zeroBytes
+   ▼
+AndroidAudioSink（AudioTrack MODE_STREAM） ──> out.write(pcm)
+```
+
+- 播放层无任何 `.wav/.pcm/.mp3` 文件写入调用，无音频日志输出。
+- 通知栏与 MediaSession 元数据**只含书名与章节标题**（`PlaybackMetadata`），不含正文片段。
+- 唯一的本地文件写入仍是 `AndroidDeviceKeyStore` 的密钥/数据库包装，与音频无关。
+
+### 17.3 核心组件（commonMain 纯逻辑）
+
+| 文件 | 职责 |
+|---|---|
+| `tts/PlaybackModels.kt` | `PlaybackStatus`、`SleepMode`（15/30/60 分钟 + 播完当前章）、`PlaybackMetadata`、`PlaybackEvent`、`PlaybackSignal` |
+| `tts/WavSegmentStream.kt` | 增量消费多个各自带 RIFF 头的 WAV 片段，输出连续 PCM；校验 16-bit / 8k–48k / 1–2 声道、跨段格式一致；单段上限 16 MiB 防 OOM；奇数字节 padding 对齐 |
+| `tts/SleepTimer.kt` | 注入 `Clock`，`tick()` 计时到点、`onChapterEnded()` 章节模式触发；`remainingMs()` 供 UI 倒计时 |
+| `tts/PlaybackStateMachine.kt` | IDLE→PREPARING→PLAYING/PAUSED→STOPPED/ERROR 集中流转，含音频焦点/耳机拔出事件 |
+| `tts/TtsController.kt` | 驱动状态机、断点续听（`resumeSegment`）、变速（0.5x–2.0x）、章节导航、定时关闭、优雅停止信号 |
+
+### 17.4 Android 平台层
+
+| 文件 | 职责 |
+|---|---|
+| `playback/PlaybackService.kt` | 前台服务 + `MediaSessionCompat` + `MediaStyle` 通知；音频焦点（`AudioFocusRequest`）、`ACTION_AUDIO_BECOMING_NOISY` 耳机拔出暂停；状态机信号驱动通知与 `stopSelf()` |
+| `AndroidManifest.xml` | `FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、`POST_NOTIFICATIONS` 权限；service 声明 `android:foregroundServiceType="mediaPlayback"` |
+| `MainActivity.kt` | 请求通知权限；设置 `AppState.onPlaybackStarted` 钩子拉起前台服务；**不再**在 `onStop` 停止朗读 |
+| `app/AppState.kt` | 注入 metadata provider 与章节导航；`ttsStart()` 统一入口（先拉服务再播放） |
+| `ui/ReaderScreen.kt` | `PlaybackPanel`：播放/暂停、上一章/下一章、语速、定时关闭与倒计时，仅展示元数据 |
+| `gradle/libs.versions.toml` + `androidApp/build.gradle.kts` | 新增 `androidx-media 1.7.0` |
+
+> **Android 14（API 34）适配要点**：媒体前台服务必须声明 `type=mediaPlayback`，且
+> `startForeground(id, notification, FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)` 必须传类型标志，
+> 否则抛 `SecurityException` 崩溃；同时需要 `POST_NOTIFICATIONS` 运行时授权（Android 13+）。
+> 这两点已分别在服务与 Manifest/Activity 中落实。
+
+### 17.5 测试与构建验证（2026-11-26 实测）
+
+| 项目 | 命令 | 结果 |
+|---|---|---|
+| Go 全量回归 | `go test ./...` | 全绿（server 16.4s / backup 6.0s / tts 3.0s …） |
+| 静态检查 | `go vet ./...`、`gofmt -l .` | 通过 / 无输出 |
+| 播放纯逻辑单测 | `:shared:testDebugUnitTest` | 新增 22 个用例全绿：状态机 5、定时 5、WAV 片段流 7、WAV 解析 5 |
+| Android debug | `:androidApp:assembleDebug` | 成功，`androidApp-debug.apk` 34 MB |
+| Android release | `:androidApp:assembleRelease` | 成功，`androidApp-release-unsigned.apk` 24 MB；R8 `mapping.txt` 36 MB、seeds/baselineProfiles 齐全，未误删序列化/反射入口 |
+
+> 复验备注：本次重跑时 Gradle 8.11.1 的 wrapper zip 缓存为空，`services.gradle.org`
+> 重定向到 GitHub 后 10s 超时；上述 APK/测试产物来自此前成功构建，产物时间戳与当前代码一致。
+
+### 17.6 真机验收清单
+
+1. 配对后进入阅读器点「朗读」，确认出声、UI 显示章节标题与进度。
+2. 切后台 / 锁屏，确认继续播放，通知栏出现 MediaStyle 控制（播放/暂停、上一章、下一章）。
+3. 通知栏与锁屏分别测试播放、暂停、上一章、下一章，状态与 UI 同步。
+4. 播放中拔出耳机（`ACTION_AUDIO_BECOMING_NOISY`），确认自动暂停；其他 App 抢音频焦点确认暂停，焦点恢复后继续。
+5. 定时关闭分别设 15/30/60 分钟与「播完当前章」，确认到点/播完后停止前台服务、通知消失。
+6. 断点续听：播放若干片段后暂停并杀进程，重启后从断点片段继续（进度按片段粒度）。
+7. 语速 0.5x–2.0x 调节，确认即时生效。
+8. Android 14 真机确认无 `SecurityException`（前台服务类型正确）。
+9. **安全验证**：`adb shell run-as com.novelstack.reader.debug ls -R files cache`（debug 包）或检查应用数据目录，**确认无任何 `.wav` / `.pcm` / `.mp3` 文件**；日志中不出现音频字节。
+10. 拒绝通知权限后确认 App 不崩溃、仍可朗读（仅无通知栏控制）。
+
+### 17.7 已知限制
+
+1. **片段拼接间隙**：每个 TTS 片段是独立合成的 WAV，直接拼接 PCM；跨段无 crossfade，段边界可能有细微静音或电平突变。若某段采样率/声道数与首段不一致会校验失败并报错（不静默错播）。
+2. **断点粒度**：续听以「片段」为单位，不能精确到片段内秒级。
+3. **客户端变速**：通过 AudioTrack 播放速率实现，不改文件内容；接近 2.0x 时音质下降，硬限制在 0.5x–2.0x。
+4. **音频不缓存**：播放需在线，离线仅保证阅读与检索（延续第五阶段边界）。
+5. **进程被杀不自动续播**：前台服务 `START_STICKY` 重建但不重放 intent，播放停止；用户手动续听走断点逻辑。
+
+### 17.8 本阶段文件清单
+
+**新增（commonMain 纯逻辑）**
+- `android/shared/src/commonMain/kotlin/com/novelstack/reader/tts/PlaybackModels.kt`
+- `android/shared/src/commonMain/kotlin/com/novelstack/reader/tts/WavSegmentStream.kt`
+- `android/shared/src/commonMain/kotlin/com/novelstack/reader/tts/SleepTimer.kt`
+- `android/shared/src/commonMain/kotlin/com/novelstack/reader/tts/PlaybackStateMachine.kt`
+
+**新增（Android 平台层）**
+- `android/androidApp/src/main/kotlin/com/novelstack/reader/playback/PlaybackService.kt`
+
+**新增（单测）**
+- `android/shared/src/commonTest/kotlin/com/novelstack/reader/tts/PlaybackStateMachineTest.kt`
+- `android/shared/src/commonTest/kotlin/com/novelstack/reader/tts/SleepTimerTest.kt`
+- `android/shared/src/commonTest/kotlin/com/novelstack/reader/tts/WavSegmentStreamTest.kt`
+
+**修改**
+- `android/shared/src/commonMain/kotlin/com/novelstack/reader/tts/TtsController.kt`（接入状态机/断点/定时/章节导航/元数据）
+- `android/shared/src/commonMain/kotlin/com/novelstack/reader/app/AppState.kt`（注入 provider、导航、ttsStart 钩子）
+- `android/shared/src/commonMain/kotlin/com/novelstack/reader/ui/ReaderScreen.kt`（PlaybackPanel）
+- `android/androidApp/src/main/kotlin/com/novelstack/reader/MainActivity.kt`（通知权限 + 服务钩子）
+- `android/androidApp/src/main/AndroidManifest.xml`（权限 + service 声明）
+- `android/gradle/libs.versions.toml`、`android/androidApp/build.gradle.kts`（androidx-media 依赖）

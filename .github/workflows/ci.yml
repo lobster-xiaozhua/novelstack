@@ -40,6 +40,13 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # 仓库仅保留文本副本；二进制 wrapper jar 由 base64 还原（保证 CI 可跑 ./gradlew）。
+      # 通过 GitHub API 推送的文件统一为 0644，丢失了 gradlew 的可执行位，
+      # 导致 ./gradlew 以 exit code 126 失败；这里显式补回执行位。
+      - name: Restore Gradle wrapper jar
+        run: |
+          base64 -d android/gradle/wrapper/gradle-wrapper.jar.b64 > android/gradle/wrapper/gradle-wrapper.jar
+          chmod +x android/gradlew
       - name: Gradle debug build + unit tests
         run: cd android && ./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug
 

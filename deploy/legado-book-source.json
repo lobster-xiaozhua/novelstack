@@ -1,0 +1,45 @@
+{
+  "bookSourceComment": "NovelStack 私人加密书库网关。导入后请把 header 里的 <SESSION_TOKEN> 与 <BOOK_SOURCE_TOKEN> 替换为真实值（可用 scripts/legado-setup.sh 自动生成）。两层都必需：会话标识身份，令牌可单独撤销。",
+  "bookSourceGroup": "私人",
+  "bookSourceName": "NovelStack（私人加密书库）",
+  "bookSourceType": 0,
+  "bookSourceUrl": "https://localhost:8443",
+  "customOrder": 0,
+  "enabled": true,
+  "enabledCookieJar": false,
+  "enabledExplore": false,
+  "header": "{\"X-Legado-Session\":\"<SESSION_TOKEN>\",\"X-Legado-Token\":\"<BOOK_SOURCE_TOKEN>\"}",
+  "lastUpdateTime": 0,
+  "respondTime": 180000,
+  "ruleBookInfo": {
+    "author": "$.author",
+    "intro": "$.intro",
+    "kind": "$.kind",
+    "lastChapter": "$.lastChapter",
+    "name": "$.name",
+    "tocUrl": "$.tocUrl",
+    "wordCount": ""
+  },
+  "ruleContent": {
+    "content": "$.content"
+  },
+  "ruleExplore": {},
+  "ruleSearch": {
+    "author": "$.author",
+    "bookList": "$.data[*]",
+    "bookUrl": "$.bookUrl",
+    "coverUrl": "$.coverUrl",
+    "intro": "$.intro",
+    "kind": "$.kind",
+    "lastChapter": "$.lastChapter",
+    "name": "$.name",
+    "wordCount": ""
+  },
+  "ruleToc": {
+    "chapterList": "$.chapters[*]",
+    "chapterName": "$.title",
+    "chapterUrl": "$.url"
+  },
+  "searchUrl": "/gateway/legado/search?key={{key}}&page={{page}}",
+  "weight": 0
+}

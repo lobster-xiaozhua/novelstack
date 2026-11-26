@@ -262,7 +262,7 @@ func TestSyncManifestAndPrefetch(t *testing.T) {
 	}
 	var m struct {
 		Cursor int64 `json:"cursor"`
-		Full   bool `json:"full"`
+		Full   bool  `json:"full"`
 		Count  int   `json:"count"`
 		Books  []struct {
 			ID         string `json:"id"`
