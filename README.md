@@ -476,7 +476,7 @@ novelstack/
 ├── web/                        ★ Vue 3 + Vite 控制台源码（base=/admin/，outDir=internal/adminui/dist）
 ├── scripts/demo-lifecycle.sh   ★ 临时目录里跑完导入→备份→演练→轮换→淘汰
 ├── imports/                    ★ 批量导入投递目录（compose 只读挂载为 /imports）
-├── docs/screenshots/           ★ 控制台实机截图
+├── docs/                       说明与截图目录（二进制截图仅在本地保留）
 ├── Dockerfile                  ★ 增加 RUNTIME_IMAGE 构建参数；预置可写 /tmp（演练需要）
 └── Makefile                    ★ backup / backup-verify / restore-drill / kek-rotate / kek-verify /
                                    import / cache-prune / cache-clear / web / demo-lifecycle
@@ -635,15 +635,15 @@ make build      # 产物被 go:embed 内嵌
 
 | 概览 | 加密健康度 |
 |---|---|
-| ![概览](docs/screenshots/admin-overview.png) | ![加密健康度](docs/screenshots/admin-kek.png) |
+| （截图略，本地 docs/screenshots/ 保留） | （截图略，本地 docs/screenshots/ 保留） |
 
 | 缓存管理（二次确认） | 审计（运维动作留痕） |
 |---|---|
-| ![缓存](docs/screenshots/admin-cache.png) | ![审计](docs/screenshots/admin-audit.png) |
+| （截图略，本地 docs/screenshots/ 保留） | （截图略，本地 docs/screenshots/ 保留） |
 
 | TTS 朗读 | 二次确认弹窗 |
 |---|---|
-| ![TTS](docs/screenshots/admin-tts.png) | ![确认](docs/screenshots/admin-cache-confirm.png) |
+| （截图略，本地 docs/screenshots/ 保留） | （截图略，本地 docs/screenshots/ 保留） |
 
 | 页面 | 内容 |
 |---|---|
@@ -889,7 +889,7 @@ App 得到 nsd_...（写入 SQLCipher 的 kv 表），此后所有请求带 Bear
 > 控制台「设备与配对」：有效/已撤销计数、设备列表（**只显示 `nsd_` 前缀**，库里只有 SHA-256）、
 > 一键撤销。撤销一台设备不影响其他设备与浏览器登录。
 >
-> ![设备与配对](docs/screenshots/admin-devices.png)
+> （截图略，本地 docs/screenshots/ 保留）
 
 ### 14.6 同步与离线缓存
 
@@ -1228,7 +1228,7 @@ make backup-list && make restore-drill PACKAGE=backups/<包名>
 
 > 控制台顶部健康横幅（黄色为 KEK 离线备份提醒；红色为三类运维告警）：
 >
-> ![系统健康横幅](docs/screenshots/admin-health.png)
+> （截图略，本地 docs/screenshots/ 保留）
 
 可选 webhook：设置 `BACKUP_ALERT_WEBHOOK` 后，告警**从无到有**时异步 POST 一条 JSON：
 
@@ -1410,6 +1410,9 @@ cd android && ./gradlew :androidApp:assembleDebug :shared:testDebugUnitTest
 |---|---|---|
 | `go` | `go vet ./...`、`go test -race -short ./...`、`gofmt -l .` 必须为空 | 不跑全量集成（留给本地 `make test-all`） |
 | `android` | `./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug` | 不跑 release、不跑 lint |
+
+> Gradle wrapper 的二进制 jar 在仓库中以 `android/gradle/wrapper/gradle-wrapper.jar.b64`
+> 文本副本保存，CI 先用 `base64 -d` 还原再运行 `./gradlew`；版本仍是 8.11.1，未升级。
 | `docker` | `docker build -t novelstack-ci .` | 不跑 compose up |
 
 workflow 语法可用 PyYAML 解析校验；`GOFLAGS=-mod=readonly` 在 go job 的 env 中显式设置。

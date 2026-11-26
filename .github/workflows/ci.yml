@@ -40,6 +40,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      # 仓库仅保留文本副本；二进制 wrapper jar 由 base64 还原（保证 CI 可跑 ./gradlew）。
+      - name: Restore Gradle wrapper jar
+        run: base64 -d android/gradle/wrapper/gradle-wrapper.jar.b64 > android/gradle/wrapper/gradle-wrapper.jar
       - name: Gradle debug build + unit tests
         run: cd android && ./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug
 
