@@ -1410,10 +1410,16 @@ cd android && ./gradlew :androidApp:assembleDebug :shared:testDebugUnitTest
 |---|---|---|
 | `go` | `go vet ./...`、`go test -race -short ./...`、`gofmt -l .` 必须为空 | 不跑全量集成（留给本地 `make test-all`） |
 | `android` | `./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug` | 不跑 release、不跑 lint |
+| `docker` | `docker build -t novelstack-ci .` | 不跑 compose up |
 
 > Gradle wrapper 的二进制 jar 在仓库中以 `android/gradle/wrapper/gradle-wrapper.jar.b64`
 > 文本副本保存，CI 先用 `base64 -d` 还原再运行 `./gradlew`；版本仍是 8.11.1，未升级。
-| `docker` | `docker build -t novelstack-ci .` | 不跑 compose up |
+>
+> **已知约束**：通过 GitHub API 推送的文件统一为 `0644`，会丢失 `android/gradlew` 的
+> 可执行位，导致 CI 中 `./gradlew` 以 **exit code 126** 失败（android job 6s 即挂，
+> go/docker job 不受影响）。CI 的 `Restore Gradle wrapper jar` 步骤里已加
+> `chmod +x android/gradlew` 补回执行位。若改用本地 `git push`（能保留 `100755`），
+> 该 chmod 仍是幂等的，可保留。
 
 workflow 语法可用 PyYAML 解析校验；`GOFLAGS=-mod=readonly` 在 go job 的 env 中显式设置。
 
