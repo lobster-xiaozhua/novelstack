@@ -1,0 +1,123 @@
+-- 本地加密库（SQLCipher）。
+-- 注意：FTS5 虚拟表不写在这里——它依赖运行时检测（SQLCipher 是否启用 FTS5/trigram），
+-- 由 AndroidReaderStore 在打开数据库后用 raw SQL 创建，ReaderRepository 负责读写。
+
+CREATE TABLE books (
+    id            TEXT NOT NULL PRIMARY KEY,
+    title         TEXT NOT NULL,
+    author        TEXT NOT NULL DEFAULT '',
+    tags          TEXT NOT NULL DEFAULT '',
+    description   TEXT NOT NULL DEFAULT '',
+    chapter_count INTEGER NOT NULL DEFAULT 0,
+    size_bytes    INTEGER NOT NULL DEFAULT 0,
+    sha256        TEXT NOT NULL DEFAULT '',
+    chunk_size    INTEGER NOT NULL DEFAULT 0,
+    kek_version   INTEGER NOT NULL DEFAULT 1,
+    sync_seq      INTEGER NOT NULL DEFAULT 0,
+    wrapped_dek   TEXT NOT NULL DEFAULT '',
+    updated_at    INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE chapters (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    book_id       TEXT NOT NULL,
+    chapter_index INTEGER NOT NULL,
+    title         TEXT NOT NULL DEFAULT '',
+    etag          TEXT NOT NULL DEFAULT '',
+    text          TEXT NOT NULL,
+    cached_at     INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(book_id, chapter_index)
+);
+CREATE INDEX chapters_book ON chapters(book_id, chapter_index);
+
+CREATE TABLE progress (
+    book_id       TEXT NOT NULL PRIMARY KEY,
+    chapter_index INTEGER NOT NULL DEFAULT 0,
+    char_offset   INTEGER NOT NULL DEFAULT 0,
+    percent       REAL NOT NULL DEFAULT 0,
+    updated_at    INTEGER NOT NULL DEFAULT 0,
+    synced_at     INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE kv (
+    k TEXT NOT NULL PRIMARY KEY,
+    v TEXT NOT NULL
+);
+
+selectBooks:
+SELECT * FROM books ORDER BY updated_at DESC;
+
+selectBook:
+SELECT * FROM books WHERE id = ?;
+
+insertBook:
+INSERT OR REPLACE INTO books
+(id, title, author, tags, description, chapter_count, size_bytes, sha256,
+ chunk_size, kek_version, sync_seq, wrapped_dek, updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?);
+
+deleteBook:
+DELETE FROM books WHERE id = ?;
+
+deleteChapters:
+DELETE FROM chapters WHERE book_id = ?;
+
+countBooks:
+SELECT COUNT(*) FROM books;
+
+selectChapters:
+SELECT * FROM chapters WHERE book_id = ? ORDER BY chapter_index;
+
+selectChapter:
+SELECT * FROM chapters WHERE book_id = ? AND chapter_index = ?;
+
+selectChapterIndexes:
+SELECT chapter_index FROM chapters WHERE book_id = ? ORDER BY chapter_index;
+
+selectChapterMeta:
+SELECT chapter_index, title, etag, (text != '') AS cached
+FROM chapters WHERE book_id = ? ORDER BY chapter_index;
+
+upsertChapterMeta:
+INSERT INTO chapters (book_id, chapter_index, title, etag, text, cached_at)
+VALUES (?,?,?,?,'',0)
+ON CONFLICT(book_id, chapter_index) DO UPDATE SET
+  title = excluded.title,
+  etag = excluded.etag;
+
+upsertChapter:
+INSERT INTO chapters (book_id, chapter_index, title, etag, text, cached_at)
+VALUES (?,?,?,?,?,?)
+ON CONFLICT(book_id, chapter_index) DO UPDATE SET
+  title = excluded.title,
+  etag = excluded.etag,
+  text = excluded.text,
+  cached_at = excluded.cached_at;
+
+deleteAllChapters:
+DELETE FROM chapters;
+
+selectProgress:
+SELECT * FROM progress WHERE book_id = ?;
+
+upsertProgress:
+INSERT OR REPLACE INTO progress (book_id, chapter_index, char_offset, percent, updated_at, synced_at)
+VALUES (?,?,?,?,?,?);
+
+markProgressSynced:
+UPDATE progress SET synced_at = ? WHERE book_id = ?;
+
+selectUnsyncedProgress:
+SELECT * FROM progress WHERE synced_at < updated_at ORDER BY updated_at ASC LIMIT ?;
+
+kvGet:
+SELECT v FROM kv WHERE k = ?;
+
+kvPut:
+INSERT OR REPLACE INTO kv (k, v) VALUES (?, ?);
+
+kvDelete:
+DELETE FROM kv WHERE k = ?;
+
+clearAll:
+DELETE FROM books;

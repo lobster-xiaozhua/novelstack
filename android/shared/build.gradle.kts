@@ -1,0 +1,86 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    alias(libs.plugins.kotlin.multiplatform)
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.compose.multiplatform)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.sqldelight)
+}
+
+kotlin {
+    androidTarget {
+        compilerOptions { jvmTarget.set(JvmTarget.JVM_17) }
+    }
+
+    // iOS target 只在 macOS 上声明：Linux/CI 无法编译 Apple 目标，
+    // 但 iosMain 源码保留（Keystore/Keychain 的 actual 实现），
+    // 在 macOS 上打开即参与编译。第五阶段不验收 iOS。
+    val isMac = System.getProperty("os.name").startsWith("Mac")
+    if (isMac) {
+        iosX64()
+        iosArm64()
+        iosSimulatorArm64()
+    }
+
+    sourceSets {
+        commonMain.dependencies {
+            implementation(compose.runtime)
+            implementation(compose.foundation)
+            implementation(compose.material3)
+            implementation(compose.ui)
+
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.serialization.json)
+            implementation(libs.ktor.client.logging)
+
+            // api：这些类型出现在 shared 的公开 API 上（AppState 构造参数、Repository 返回值、
+            // Koin Module），androidApp 编译时必须能看见，否则会报 “Cannot access class ... Json”。
+            api(libs.koin.core)
+            api(libs.sqldelight.runtime)
+            api(libs.coroutines.core)
+            api(libs.serialization.json)
+            implementation(libs.datetime)
+        }
+        commonTest.dependencies {
+            implementation(kotlin("test"))
+        }
+        androidMain.dependencies {
+            implementation(libs.ktor.client.okhttp)
+            implementation(libs.koin.android)
+            implementation(libs.sqldelight.android.driver)
+            implementation(libs.androidx.sqlite)
+            implementation(libs.sqlcipher.android)
+            implementation(libs.coroutines.android)
+        }
+        if (isMac) {
+            iosMain.dependencies {
+                implementation(libs.ktor.client.core)
+            }
+        }
+    }
+}
+
+android {
+    namespace = "com.novelstack.reader.shared"
+    compileSdk = 35
+    defaultConfig {
+        minSdk = 26
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+}
+
+sqldelight {
+    databases {
+        create("ReaderDatabase") {
+            packageName.set("com.novelstack.reader.db")
+            // UPSERT 需要 SQLite 3.24+；默认的 3.18 方言会报 “',' expected, got 'ON'”。
+            dialect("app.cash.sqldelight:sqlite-3-38-dialect:${libs.versions.sqldelight.get()}")
+        }
+    }
+}
