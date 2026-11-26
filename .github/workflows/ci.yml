@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# 三个 job 只做「可验证」的最低限度：不跑 release、不跑 lint、不上传覆盖率。
+# 镜像/代理地址由 repository variables 注入，workflow 内不硬编码内网地址。
+jobs:
+  go:
+    name: go (vet + race/short + gofmt)
+    runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -mod=readonly
+      GOPROXY: ${{ vars.GO_MIRROR || 'https://proxy.golang.org,direct' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.12'
+      - name: go vet
+        run: go vet ./...
+      - name: go test -race -short
+        run: go test -race -short ./...
+      - name: gofmt clean
+        run: test -z "$(gofmt -l .)"
+
+  android:
+    name: android (shared tests + debug apk)
+    runs-on: ubuntu-latest
+    env:
+      NOVELSTACK_MAVEN_MIRROR: ${{ vars.GRADLE_MIRROR }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Gradle debug build + unit tests
+        run: cd android && ./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug
+
+  docker:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        run: docker build -t novelstack-ci .

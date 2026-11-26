@@ -1,0 +1,121 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        # 默认 distroless/static（无 shell）；镜像源不可达时可用环境变量覆盖：
+        #   RUNTIME_IMAGE=registry.local/distroless/static-debian12:nonroot docker compose up -d --build
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:-gcr.io/distroless/static-debian12:nonroot}
+    restart: unless-stopped
+    # 硬约束：app 容器不对外暴露任何端口，仅通过内部网络与 caddy / meilisearch 通信
+    expose:
+      - "8080"
+    env_file:
+      - .env
+    environment:
+      ADDR: ":8080"
+      DATA_DIR: /data
+      # KEK 由 compose secret 只读挂载（/run/secrets/kek_v1、/run/secrets/kek_v2）。
+      # 轮换窗口期把 KEK_PATH 指向新版本，并把旧版本写进 KEK_OLD_PATHS（见 README）。
+      KEK_PATH: ${KEK_PATH:-/run/secrets/kek_v1}
+      KEK_VERSION: ${KEK_VERSION:-1}
+      KEK_OLD_PATHS: ${KEK_OLD_PATHS:-}
+      # 元数据检索走 Docker 内部网络；无宿主端口
+      MEILI_URL: ${MEILI_URL:-}
+      # 第六阶段：自动备份目录（与 /data 分离挂载，路径仍保持 /data/backups 以兼容第四阶段 CLI）
+      BACKUP_DIR: /data/backups
+    volumes:
+      - ./data:/data
+      # 独立云盘挂载：备份包不随 data 卷一起快照/误删
+      - ${BACKUP_HOST_DIR:-./backups}:/data/backups
+      # 批量导入目录（只读）；把 .txt 放进来后 make import
+      - ./imports:/imports:ro
+    secrets:
+      - kek_v1
+      - kek_v2
+    networks:
+      - private
+    mem_limit: 256m
+    depends_on:
+      - meilisearch
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # 仅绑定本机回环地址 8443，不暴露公网
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - private
+    mem_limit: 96m
+    depends_on:
+      - app
+
+  # ---- 第三阶段：元数据检索（Meilisearch）----
+  # 只索引书名/作者/标签/简介/章节标题，正文永不进入该索引。
+  # 不暴露宿主端口：仅 app 通过 private 网络访问。
+  meilisearch:
+    image: getmeili/meilisearch:v1.12
+    restart: unless-stopped
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      # 主密钥来自 .env（已在 .gitignore 内）；也可改用 docker secret + 启动脚本注入。
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:?请在 .env 中设置 MEILI_MASTER_KEY（至少 16 字节）}
+      MEILI_DB_PATH: /meili_data
+      # 在 128MB 限制下压住索引期的内存峰值（默认按 CPU 核数开线程，容易触发 OOM）
+      MEILI_MAX_INDEXING_MEMORY: 64Mb
+      MEILI_MAX_INDEXING_THREADS: "1"
+    volumes:
+      - meili_data:/meili_data
+    networks:
+      - private
+    # 资源限制：百万级文档约 100MB 常驻，与 <256MB 目标兼容
+    mem_limit: 128m
+    # 注意：不写 ports，容器端口不发布到宿主
+
+  # ---- 第二阶段：TTS（方式 B，OpenAI 兼容 HTTP 服务）----
+  # 本阶段不规定具体镜像：设置 TTS_IMAGE 指向你自己的 OpenAI 兼容 TTS 服务，
+  # 并在 .env 中配置 TTS_PROVIDER=openai 与 TTS_HTTP_BASE_URL=http://tts:8080。
+  # 默认 profile 不启动，避免误拉不存在的镜像；启用方式：
+  #   docker compose --profile tts up -d
+  tts:
+    profiles: ["tts"]
+    image: ${TTS_IMAGE:-ghcr.io/replace-me/openai-compatible-tts:latest}
+    restart: unless-stopped
+    environment:
+      # 引擎侧凭证由该服务自行读取，主后端只持有 base_url
+      TTS_ENGINE_API_KEY_FILE: /run/secrets/tts_api_key
+    secrets:
+      - tts_api_key
+    networks:
+      - private
+      - egress      # 引擎可能需要出网下载模型/调用上游
+    mem_limit: 512m
+
+networks:
+  private:
+    driver: bridge
+    internal: true   # app / caddy / meilisearch 所在网络不接外网出口
+  egress:
+    driver: bridge   # 仅 TTS 容器使用，允许出网
+
+volumes:
+  caddy_data:
+  caddy_config:
+  meili_data:
+
+secrets:
+  # 第四阶段：版本化 KEK。v1 为当前密钥，v2 预生成（make kek），轮换时启用。
+  # 两者都从 ./secrets 下的文件提供，只读挂载为 /run/secrets/kek_v1|kek_v2。
+  kek_v1:
+    file: ./secrets/kek.v1
+  kek_v2:
+    file: ./secrets/kek.v2
+  # 仅在启用 tts profile 时需要该文件
+  tts_api_key:
+    file: ./secrets/tts_api_key

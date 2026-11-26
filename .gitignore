@@ -1,0 +1,56 @@
+# ---- 敏感材料：KEK / 备份口令 / 数据 / 本地环境 ----
+.env
+.env.*
+!.env.example
+secrets/kek
+secrets/kek.v1
+secrets/kek.v2
+secrets/kek.*
+secrets/*.pass
+secrets/*.key
+backups.pass
+*.pass
+!secrets/.gitkeep
+# 根目录数据/备份目录；根锚定以免误伤源码里的同名包目录（如 Kotlin 的 .../reader/data）
+/data/
+/backups/
+/bin/
+*.db
+*.db-wal
+*.db-shm
+*.enc
+*.log
+
+# 批量导入源文件（体积大、可能含版权内容）
+imports/*
+!imports/.gitkeep
+deploy/*.local.json
+
+# 加密备份包与演练记录（含数据库快照密文，同样不入库）
+*.nsb
+*.nsb.sha256
+drill-log.jsonl
+
+# 演示与本地产物
+demo-out/
+local-reader/
+
+# ---- 构建产物 ----
+# 只忽略仓库根目录的 dist/；internal/adminui/dist 是 go:embed 的前端产物，必须入库。
+/dist/
+!/internal/adminui/dist/
+node_modules/
+.gradle/
+.kotlin/
+build/
+*/build/
+*.hprof
+local.properties
+/acceptance
+/novelstack
+
+# ---- release 签名材料 ----
+*.jks
+*.keystore
+android/keystore.properties
+secrets/*.jks

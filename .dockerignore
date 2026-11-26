@@ -1,0 +1,35 @@
+# VCS / CI
+/.git
+/.github
+
+# 敏感材料与运行时数据（根锚定；internal/adminui/dist 是 go:embed 产物，必须保留）
+/data
+/backups
+/secrets
+/imports
+*.nsb
+*.nsb.sha256
+backups.pass
+*.pass
+.env
+.env.*
+
+# 本地构建产物与临时目录
+/dist
+/android
+/demo-out
+/deploy/*.local.json
+node_modules
+.gradle
+.kotlin
+build
+*/build
+*.hprof
+*.log
+local.properties
+/acceptance
+/novelstack
+
+# 文档：只保留 README（镜像构建不需要其余说明与截图）
+*.md
+!README.md
