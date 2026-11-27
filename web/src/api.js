@@ -75,6 +75,11 @@ export const getLanInfo = () => request('/api/lan/info')
 export const getReadingStats = () => request('/api/stats/reading')
 export const getExportPreview = () => request('/api/admin/export/preview')
 
+// 终端防御阶段：IP 黑名单查看与解封。
+export const getBlocklist = () => request('/api/admin/blocklist')
+export const unblockIP = (ip) =>
+  request('/api/admin/blocklist/' + encodeURIComponent(ip), { method: 'DELETE' })
+
 /**
  * 下载导出包。浏览器无法用 fetch+blob 直接触发下载时需要自建 <a>：
  * 这里先取回 blob，再由临时链接落盘，文件名优先用服务端 Content-Disposition。

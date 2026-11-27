@@ -62,6 +62,7 @@ kotlin {
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.work.runtime)
             implementation(libs.tinypinyin)
+            implementation(libs.biometric)
             implementation(libs.sqlcipher.android)
             implementation(libs.coroutines.android)
         }

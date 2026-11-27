@@ -40,12 +40,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
+import com.novelstack.reader.app.CoverLoadPolicy
+import com.novelstack.reader.app.NetworkStatus
 import com.novelstack.reader.model.DiscoverBook
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun DiscoverScreen(state: AppState) {
     val disc by state.discover.collectAsState()
+    val network by state.network.collectAsState()
+    val power by state.power.collectAsState()
+    val settings by state.settings.collectAsState()
+    val quality = CoverLoadPolicy.decide(network, power.isLow, settings.lowDataCover)
     LaunchedEffect(Unit) { if (disc == null) state.loadDiscover() }
 
     Scaffold(
@@ -92,7 +98,7 @@ fun DiscoverScreen(state: AppState) {
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         items(d.recent, key = { it.id }) { b ->
-                            DiscoverCard(b) { state.openBook(b.id) }
+                            DiscoverCard(b, quality) { state.openBook(b.id) }
                         }
                     }
                 }
@@ -105,7 +111,7 @@ fun DiscoverScreen(state: AppState) {
                 item {
                     LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         items(d.random, key = { it.id }) { b ->
-                            DiscoverCard(b) { state.openBook(b.id) }
+                            DiscoverCard(b, quality) { state.openBook(b.id) }
                         }
                     }
                 }
@@ -125,7 +131,12 @@ private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun DiscoverCard(book: DiscoverBook, onClick: () -> Unit) {
+private fun DiscoverCard(
+    book: DiscoverBook,
+    quality: CoverLoadPolicy.Quality,
+    onClick: () -> Unit,
+) {
+    val full = quality == CoverLoadPolicy.Quality.FULL
     Card(modifier = Modifier.width(140.dp).clickable(onClick = onClick)) {
         Column(modifier = Modifier.padding(10.dp)) {
             Box(
@@ -133,13 +144,16 @@ private fun DiscoverCard(book: DiscoverBook, onClick: () -> Unit) {
                     .fillMaxWidth()
                     .height(96.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
+                    // 低清占位用更淡的底色：不触发任何并发封面加载。
+                    .background(
+                        MaterialTheme.colorScheme.primary.copy(alpha = if (full) 0.16f else 0.07f),
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     book.title.take(1),
                     style = MaterialTheme.typography.headlineMedium,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = if (full) 1f else 0.5f),
                     fontWeight = FontWeight.SemiBold,
                 )
                 if (book.isFavorite) {

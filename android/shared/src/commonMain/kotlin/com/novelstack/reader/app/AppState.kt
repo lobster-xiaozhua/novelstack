@@ -60,6 +60,16 @@ data class ReaderSettings(
     // 第九阶段：隐藏刘海（阅读页绘制到挖孔区域，最大化可用宽度）
     val hideNotch: Boolean = false,
     val ttsSpeed: Float = 1.0f,
+
+    // ---- 终端防御阶段 ----
+    /** 生物识别应用锁开关（需设备支持且已录入；否则强制关闭）。 */
+    val appLockEnabled: Boolean = false,
+    /** 防截屏开关：阅读页/设置页加 FLAG_SECURE，防截屏/录屏/最近任务缩略图。 */
+    val secureScreen: Boolean = true,
+    /** 翻页触感开关：低电量时由 HapticPolicy 自动抑制。 */
+    val hapticsEnabled: Boolean = true,
+    /** 移动网络下发现页封面是否只加载低清占位（默认省流量）。 */
+    val lowDataCover: Boolean = true,
 )
 
 /** 检查更新 UI 状态（只含版本元数据与下载进度，不含 APK 字节）。 */
@@ -121,6 +131,11 @@ class AppState(
     private val telemetryControl: TelemetryControl? = null,
     /** 第十阶段：局域网服务发现（Android 实现；其它平台传 null）。 */
     private val lanDiscovery: LanDiscoveryController? = null,
+    /** 终端防御阶段：设备侧能力（Android 实现；其它平台用 Noop 默认）。 */
+    private val powerMonitor: PowerMonitor = NoopPowerMonitor,
+    private val appLock: AppLockController = NoopAppLock,
+    private val screenGuard: ScreenGuard = NoopScreenGuard,
+    private val textActions: TextActions = NoopTextActions,
 ) {
     private var store: ReaderRepository = storeFactory()
 
@@ -168,10 +183,26 @@ class AppState(
     /** 服务器设置页的操作反馈。 */
     val endpointMessage = MutableStateFlow<String?>(null)
 
-    /** 只有不计量网络才允许预读/批量同步，避免偷跑流量。 */
-    val canPrefetch: Boolean get() = network.value == NetworkStatus.Online
+    // ---- 终端防御阶段：安全 / 能耗 ----
+    /** 电池快照；由平台 PowerMonitor 驱动。 */
+    val power = MutableStateFlow(powerMonitor.current())
+    /** 应用锁：true 时全屏遮罩，必须验证通过才能使用。 */
+    val locked = MutableStateFlow(false)
+    /** 当前页面是否需要 FLAG_SECURE（阅读页/设置页）。 */
+    val secureNow = MutableStateFlow(false)
+
+    /** 只有不计量网络、且电量不低时允许预读/批量同步。 */
+    val canPrefetch: Boolean get() = network.value == NetworkStatus.Online && !power.value.isLow
 
     private var progressJob: Job? = null
+    /** 电量监听注销句柄（进程退出时释放）。 */
+    private var powerUnregister: (() -> Unit)? = null
+    /** 上次进入后台的单调时钟（毫秒）；0 表示在前台。 */
+    private var backgroundSinceMs: Long = 0L
+    /** 本次锁定是否由「进入后台」触发（用于 <30s 回前台时自动放行）。 */
+    private var lockOnBackground: Boolean = false
+    /** 上次触觉反馈时刻，用于 HapticPolicy 节流。 */
+    private var lastHapticAtMs: Long = 0L
 
     /** 上次计入阅读时长的时间点（毫秒）；0 表示尚未开始计时。 */
     private var lastActivityAt: Long = 0L
@@ -233,6 +264,21 @@ class AppState(
                 return p.takeIf { it in 0 until reader.value.chapters.size }
             }
         })
+        // 终端防御：注册电量监听，同步初始快照。
+        powerUnregister = powerMonitor.register { snapshot ->
+            val wasLow = power.value.isLow
+            power.value = snapshot
+            // 低电量：缩小 TTS 缓冲；预读由 canPrefetch 拦截，遥测重试由 worker 拦截。
+            com.novelstack.reader.app.AudioBufferPolicy.lowPower = snapshot.isLow
+            if (snapshot.isLow && !wasLow) {
+                notice.value = "电量较低或省电模式：已暂停后台预读与触感反馈"
+            }
+        }
+        com.novelstack.reader.app.AudioBufferPolicy.lowPower = power.value.isLow
+        // 应用锁：支持且已录入时，冷启动立即要求验证。
+        if (settings.value.appLockEnabled && appLock.isAvailable() && appLock.isEnrolled()) {
+            locked.value = true
+        }
         scope.launch {
             bootstrap()
             refreshCachedIds()
@@ -1056,6 +1102,104 @@ class AppState(
         )
         pairLanService(service, payload.code, deviceName)
     }
+
+    // ---- 终端防御阶段：应用锁 / 防截屏 / 文本操作 / 触感 ----
+
+    /**
+     * 生命周期：进入后台时记录时间，并立即上锁。
+     *
+     * 立即上锁是为了最近任务缩略图与回前台第一帧不暴露内容；
+     * 离开不足 30 秒时 [onEnterForeground] 会自动放行，不打扰用户。
+     * 由 MainActivity.onPause 调用（平台侧保证）。
+     */
+    fun onEnterBackground(nowMs: Long = currentMs()) {
+        backgroundSinceMs = nowMs
+        if (settings.value.appLockEnabled && appLock.isAvailable() && appLock.isEnrolled()) {
+            locked.value = true
+            lockOnBackground = true
+        }
+    }
+
+    /**
+     * 回到前台：后台超过 30 秒则保持锁定并要求验证；不足 30 秒且是后台触发的锁定则自动放行。
+     * 冷启动时 backgroundSinceMs=0，不重复触发（init 里已处理）。
+     */
+    fun onEnterForeground(nowMs: Long = currentMs()) {
+        // 回前台顺带刷新电量快照（广播可能在此期间丢失）。
+        power.value = powerMonitor.current()
+        val bg = backgroundSinceMs
+        backgroundSinceMs = 0L
+        val wasBackgroundLock = lockOnBackground
+        lockOnBackground = false
+        if (bg <= 0L) return
+        if (!settings.value.appLockEnabled || !appLock.isAvailable() || !appLock.isEnrolled()) {
+            if (wasBackgroundLock) locked.value = false
+            return
+        }
+        locked.value = nowMs - bg >= 30_000L
+    }
+
+    /** 发起生物识别；成功则解锁。失败由 UI 展示模糊遮罩与重试提示。 */
+    fun unlockWithBiometric(onError: (Int, String) -> Unit) {
+        appLock.authenticate(
+            onSuccess = { locked.value = false },
+            onError = onError,
+        )
+    }
+
+    /** 设备当前是否具备可用的应用锁条件（供设置页决定开关是否可开）。 */
+    fun appLockCapable(): Boolean = appLock.isAvailable() && appLock.isEnrolled()
+
+    /**
+     * 根据当前页面更新 FLAG_SECURE。只有开关打开且页面属于敏感页（阅读/设置）时才加。
+     */
+    fun updateSecureFlag(screen: Screen) {
+        val sensitive = screen is Screen.Reader || screen is Screen.Settings || screen is Screen.ServerSettings
+        val want = settings.value.secureScreen && sensitive
+        if (secureNow.value != want) {
+            secureNow.value = want
+            screenGuard.setSecure(want)
+        }
+    }
+
+    /** 设置变更后重新应用防截屏（开关被关掉时立即清除 FLAG_SECURE）。 */
+    fun reapplySecureFlag(screen: Screen) {
+        secureNow.value = false
+        updateSecureFlag(screen)
+    }
+
+    /** 文本操作：复制。 */
+    fun copyText(text: String) {
+        if (text.isBlank()) return
+        textActions.copy(text)
+        notice.value = "已复制"
+    }
+
+    /** 文本操作：网页翻译（ACTION_PROCESS_TEXT）。无可用应用时给出提示。 */
+    fun processText(text: String) {
+        if (text.isBlank()) return
+        if (!textActions.processText(text)) notice.value = "未找到可用的翻译/词典应用"
+    }
+
+    /** 划词本地搜索的预填词（SearchScreen 进入时读取并清空）。 */
+    val searchPrefill = MutableStateFlow<String?>(null)
+
+    /** 文本操作：本地搜索——填充查询词并跳到搜索页。 */
+    fun searchLocalText(text: String) {
+        val q = text.trim().take(100)
+        if (q.isEmpty()) return
+        searchPrefill.value = q
+        screen.value = Screen.Search
+    }
+
+    /** 翻页触感：由 HapticPolicy 节流 + 低电量抑制，返回是否应振动。 */
+    fun shouldHaptic(nowMs: Long = currentMs()): Boolean {
+        val ok = HapticPolicy.shouldVibrate(lastHapticAtMs, nowMs, settings.value.hapticsEnabled, power.value.isLow)
+        if (ok) lastHapticAtMs = nowMs
+        return ok
+    }
+
+    private fun currentMs(): Long = kotlinx.datetime.Clock.System.now().toEpochMilliseconds()
 
     // ---- 系统保活 ----
 

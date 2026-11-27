@@ -3,8 +3,10 @@ package com.novelstack.reader.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +34,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -50,8 +54,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextIndent
@@ -63,6 +69,7 @@ import com.novelstack.reader.app.ReaderSettings
 import com.novelstack.reader.app.Screen
 import com.novelstack.reader.reading.Kinsoku
 import com.novelstack.reader.reading.PrefetchGate
+import com.novelstack.reader.reading.WordPicker
 import com.novelstack.reader.tts.SleepMode
 import com.novelstack.reader.tts.TtsController
 
@@ -77,6 +84,7 @@ fun ReaderScreen(state: AppState, bookId: String) {
     val favorite = books.firstOrNull { it.id == bookId }?.is_favorite != 0L
     val offline by state.offline.collectAsState()
     val prompt by state.offlinePrompt.collectAsState()
+    val haptics = LocalHapticFeedback.current
 
     var showToc by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -158,7 +166,11 @@ fun ReaderScreen(state: AppState, bookId: String) {
                     if (pager.currentPage != r.index) pager.scrollToPage(r.index)
                 }
                 LaunchedEffect(pager.currentPage) {
-                    if (pager.currentPage != r.index) state.goChapter(pager.currentPage)
+                    if (pager.currentPage != r.index) {
+                        state.goChapter(pager.currentPage)
+                        // 沉浸式翻页：滑动翻页触发微振动（HapticPolicy 节流+低电量抑制）。
+                        if (state.shouldHaptic()) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    }
                 }
                 HorizontalPager(state = pager, modifier = Modifier.weight(1f)) { page ->
                     // 覆盖模式：被翻走的页轻微后退形成层次；平移模式保持默认跟手。
@@ -210,7 +222,10 @@ fun ReaderScreen(state: AppState, bookId: String) {
                     trackColor = palette.dim.copy(alpha = 0.2f),
                 )
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { state.goChapter(r.index - 1) }, enabled = r.index > 0) {
+                    TextButton(onClick = {
+                        state.goChapter(r.index - 1)
+                        if (state.shouldHaptic()) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    }, enabled = r.index > 0) {
                         Text("上一章", color = if (r.index > 0) palette.dim else palette.dim.copy(alpha = 0.4f))
                     }
                     TextButton(onClick = { state.prefetchAhead() }) {
@@ -232,7 +247,10 @@ fun ReaderScreen(state: AppState, bookId: String) {
                         style = MaterialTheme.typography.labelSmall,
                     )
                     TextButton(
-                        onClick = { state.goChapter(r.index + 1) },
+                        onClick = {
+                            state.goChapter(r.index + 1)
+                            if (state.shouldHaptic()) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        },
                         enabled = r.index < r.chapters.size - 1 &&
                             (!offline || r.chapters.getOrNull(r.index + 1)?.cached == true),
                     ) {
@@ -339,6 +357,14 @@ private fun ChapterBody(
     val r by state.reader.collectAsState()
     val scroll = rememberScrollState()
     val gate = remember { PrefetchGate(0.8f) }
+    // 终端防御：长按查词悬浮菜单。
+    var menuWord by remember { mutableStateOf<String?>(null) }
+    // 菜单锚点（相对文本左上角），让菜单出现在手指附近而不是固定角落。
+    var menuAt by remember { mutableStateOf(androidx.compose.ui.unit.DpOffset.Zero) }
+    // 文本排版结果：用 getOffsetForPosition 把触摸坐标精确换算成字符下标。
+    var textLayout by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val bodyText = remember(r.text) { Kinsoku.apply(r.text) }
 
     // 第八阶段：滚动进度超过 80% 时，静默预拉下一章（每章仅触发一次）。
     LaunchedEffect(scroll.value, scroll.maxValue, r.index) {
@@ -369,17 +395,60 @@ private fun ChapterBody(
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(bottom = 14.dp),
         )
-        Text(
-            // 避头尾近似：在禁则标点前插入 word joiner；首行缩进 2 字符；段落断行策略。
-            Kinsoku.apply(r.text),
-            color = palette.fg,
-            style = MaterialTheme.typography.bodyLarge.copy(
-                fontSize = settings.fontSize.sp,
-                lineHeight = (settings.fontSize * settings.lineHeight).sp,
-                textIndent = TextIndent(firstLine = (settings.fontSize * 2).sp),
-                lineBreak = LineBreak.Paragraph,
-            ),
-        )
+        // 终端防御：SelectionContainer 支持系统原生选择复制；长按另外弹出查词菜单。
+        SelectionContainer {
+            Text(
+                bodyText,
+                color = palette.fg,
+                style = MaterialTheme.typography.bodyLarge.copy(
+                    fontSize = settings.fontSize.sp,
+                    lineHeight = (settings.fontSize * settings.lineHeight).sp,
+                    textIndent = TextIndent(firstLine = (settings.fontSize * 2).sp),
+                    lineBreak = LineBreak.Paragraph,
+                ),
+                onTextLayout = { textLayout = it },
+                modifier = Modifier.pointerInput(bodyText, textLayout) {
+                    detectTapGestures(
+                        onLongPress = { offset ->
+                            // 精确命中：排版结果把像素坐标换算成字符下标（含换行/缩进）。
+                            val idx = textLayout?.getOffsetForPosition(offset)
+                                ?: (bodyText.length * (offset.y / size.height.coerceAtLeast(1)))
+                                    .toInt().coerceIn(0, bodyText.length - 1)
+                            val word = WordPicker.pick(bodyText, idx)
+                            if (word.isNotEmpty()) {
+                                menuWord = word
+                                menuAt = with(density) {
+                                    androidx.compose.ui.unit.DpOffset(offset.x.toDp(), offset.y.toDp())
+                                }
+                            }
+                        },
+                    )
+                },
+            )
+        }
+
+        // 查词菜单：复制 / 本地搜索 / 网页翻译（ACTION_PROCESS_TEXT）。
+        val currentWord = menuWord
+        if (currentWord != null) {
+            DropdownMenu(
+                expanded = true,
+                onDismissRequest = { menuWord = null },
+                offset = menuAt,
+            ) {
+                DropdownMenuItem(
+                    text = { Text("复制：$currentWord") },
+                    onClick = { state.copyText(currentWord); menuWord = null },
+                )
+                DropdownMenuItem(
+                    text = { Text("本地搜索：$currentWord") },
+                    onClick = { state.searchLocalText(currentWord); menuWord = null },
+                )
+                DropdownMenuItem(
+                    text = { Text("网页翻译 / 词典") },
+                    onClick = { state.processText(currentWord); menuWord = null },
+                )
+            }
+        }
         r.message?.let {
             Spacer(Modifier.height(16.dp))
             Text(it, color = Color(0xFFE08A8A), style = MaterialTheme.typography.bodySmall)

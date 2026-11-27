@@ -15,6 +15,7 @@ import (
 	"novelstack/internal/audit"
 	"novelstack/internal/auth"
 	"novelstack/internal/backup"
+	"novelstack/internal/blocklist"
 	"novelstack/internal/books"
 	"novelstack/internal/config"
 	"novelstack/internal/devices"
@@ -54,6 +55,8 @@ type Deps struct {
 	LANPairs *lan.Store
 	// Discovery 是局域网广播服务，仅用于把地址暴露给 /api/lan/info；可为 nil。
 	Discovery *lan.Discovery
+	// Blocklist 提供 IP 级熔断（1 小时内 10 次 401/404 封禁 24 小时）；为 nil 时禁用。
+	Blocklist *blocklist.Store
 }
 
 // Server 持有全部依赖并暴露 http.Handler。
@@ -75,6 +78,7 @@ type Server struct {
 	stats     *stats.Service
 	lanPairs  *lan.Store
 	discovery *lan.Discovery
+	blocklist *blocklist.Store
 	scheduler interface {
 		RunOnce(ctx context.Context) (*backup.CreateResult, error)
 	}
@@ -101,6 +105,7 @@ func New(d Deps) *Server {
 		stats:     d.Stats,
 		lanPairs:  d.LANPairs,
 		discovery: d.Discovery,
+		blocklist: d.Blocklist,
 		scheduler: d.Scheduler,
 		mux:       http.NewServeMux(),
 	}
@@ -109,8 +114,13 @@ func New(d Deps) *Server {
 }
 
 // Handler 返回带安全响应头的根 handler。
+// 熔断中间件放在安全头内层：被封禁的 403 同样带安全头，且不会二次计数。
 func (s *Server) Handler() http.Handler {
-	return s.securityHeaders(s.mux)
+	var h http.Handler = s.mux
+	if s.blocklist != nil {
+		h = s.blocklist.Middleware(h)
+	}
+	return s.securityHeaders(h)
 }
 
 func (s *Server) routes() {
@@ -180,6 +190,10 @@ func (s *Server) routes() {
 
 	// 元数据检索（只索引书名/作者/标签/简介/章节标题，正文不在服务端）。
 	s.mux.HandleFunc("GET /api/search/metadata", s.requireSession(s.handleSearchMetadata))
+
+	// 终端防御阶段：IP 黑名单管理（浏览器会话）。
+	s.mux.HandleFunc("GET /api/admin/blocklist", s.requireSession(s.handleBlocklistList))
+	s.mux.HandleFunc("DELETE /api/admin/blocklist/{ip}", s.requireSession(s.handleBlocklistUnblock))
 
 	// 审计与指标（仅当前登录用户）。
 	s.mux.HandleFunc("GET /api/admin/audit", s.requireSession(s.handleAuditFiltered))

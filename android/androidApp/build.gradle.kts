@@ -103,6 +103,8 @@ dependencies {
     implementation(compose.material3)
     implementation(compose.ui)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.biometric)
+    implementation(libs.androidx.fragment)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.media)
     // 第十阶段：扫描控制台配对二维码（ZXing，纯本地解码，不上传图像）。

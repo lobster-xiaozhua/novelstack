@@ -176,6 +176,18 @@ type Config struct {
 	LANAdvertiseHost string
 	// LANAdvertisePort 显式指定广播出去的 HTTP 端口；为空时用 Addr 里的端口。
 	LANAdvertisePort int
+
+	// ---- 终端防御阶段：IP 熔断 ----
+	// BlocklistEnabled 为 false 时完全关闭 IP 熔断中间件（默认开启）。
+	BlocklistEnabled bool
+	// BlocklistWindow 是违规计数滑动窗口，默认 1 小时。
+	BlocklistWindow time.Duration
+	// BlocklistThreshold 是窗口内触发封禁的 401/404 次数，默认 10。
+	BlocklistThreshold int
+	// BlocklistBanTTL 是封禁时长，默认 24 小时。
+	BlocklistBanTTL time.Duration
+	// BlocklistMaxEntries 是黑名单条数上限（防被探测撑爆表），默认 5000。
+	BlocklistMaxEntries int
 }
 
 // voiceNamePattern 与 tts 包内的校验保持一致（配置阶段先挡一次，避免朗读时才 400）。
@@ -261,6 +273,12 @@ func FromEnv() (*Config, error) {
 		LANPairPerMinute: envInt("LAN_PAIR_PER_MINUTE", 8),
 		LANAdvertiseHost: strings.TrimSpace(envStr("LAN_ADVERTISE_HOST", "")),
 		LANAdvertisePort: envInt("LAN_ADVERTISE_PORT", 0),
+
+		BlocklistEnabled:    envBool("IP_BLOCKLIST_ENABLED", true),
+		BlocklistWindow:     time.Duration(envInt("IP_BLOCKLIST_WINDOW_MINUTES", 60)) * time.Minute,
+		BlocklistThreshold:  envInt("IP_BLOCKLIST_THRESHOLD", 10),
+		BlocklistBanTTL:     time.Duration(envInt("IP_BLOCKLIST_BAN_HOURS", 24)) * time.Hour,
+		BlocklistMaxEntries: envInt("IP_BLOCKLIST_MAX_ENTRIES", 5000),
 	}
 	if c.ChunkSize < 64<<10 || c.ChunkSize > 16<<20 {
 		return nil, fmt.Errorf("CHUNK_SIZE 必须在 64KiB..16MiB 之间")
@@ -335,6 +353,18 @@ func FromEnv() (*Config, error) {
 	}
 	if c.LANAdvertisePort < 0 || c.LANAdvertisePort > 65535 {
 		return nil, fmt.Errorf("LAN_ADVERTISE_PORT 必须在 0..65535 之间")
+	}
+	if c.BlocklistWindow < time.Minute || c.BlocklistWindow > 24*time.Hour {
+		return nil, fmt.Errorf("IP_BLOCKLIST_WINDOW_MINUTES 必须在 1..1440 之间")
+	}
+	if c.BlocklistThreshold < 2 || c.BlocklistThreshold > 1000 {
+		return nil, fmt.Errorf("IP_BLOCKLIST_THRESHOLD 必须在 2..1000 之间")
+	}
+	if c.BlocklistBanTTL < time.Minute || c.BlocklistBanTTL > 30*24*time.Hour {
+		return nil, fmt.Errorf("IP_BLOCKLIST_BAN_HOURS 必须在 1..720 之间")
+	}
+	if c.BlocklistMaxEntries < 100 || c.BlocklistMaxEntries > 100000 {
+		return nil, fmt.Errorf("IP_BLOCKLIST_MAX_ENTRIES 必须在 100..100000 之间")
 	}
 	if c.AlertWebhook != "" {
 		u, err := url.Parse(c.AlertWebhook)

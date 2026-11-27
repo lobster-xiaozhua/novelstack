@@ -26,6 +26,7 @@ import (
 	"novelstack/internal/audit"
 	"novelstack/internal/auth"
 	"novelstack/internal/backup"
+	"novelstack/internal/blocklist"
 	"novelstack/internal/books"
 	"novelstack/internal/config"
 	"novelstack/internal/cryptobox"
@@ -53,6 +54,8 @@ type stack struct {
 	db    *sql.DB
 	books *books.Service
 	tts   *tts.Service
+	// 终端防御阶段：暴露熔断 store 供测试直接检查黑名单。
+	blocklist *blocklist.Store
 }
 
 // stackOpts 控制测试栈的组件配置。
@@ -70,6 +73,12 @@ type stackOpts struct {
 	webhook    string
 	// 第九阶段：正文净化规则（为空表示不净化）。
 	purgeRules []string
+	// 终端防御阶段：是否启用 IP 熔断。默认关闭，避免普通测试里的 401/404 互相污染。
+	blocklistOn bool
+	// 熔断阈值（1 小时窗口内的 401/404 次数）。
+	blocklistThreshold int
+	// 登录失败限流（次/分钟）；熔断测试需调高，否则先撞 429。
+	loginFailPerMinute int
 }
 
 // buildStack 组装完整服务。可以重复调用以模拟容器重启（同一 dataDir）。
@@ -91,17 +100,22 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		opts.maxSegRunes = 100
 	}
 	cfg := &config.Config{
-		Addr:               ":0",
-		DataDir:            dataDir,
-		CiphertextDir:      filepath.Join(dataDir, "ciphertext"),
-		BackupDir:          filepath.Join(dataDir, "backups"),
-		DBPath:             filepath.Join(dataDir, "app.db"),
-		KEKPath:            filepath.Join(dataDir, "kek"),
-		CookieSecure:       false, // 开发环境
-		MaxUploadBytes:     20 << 20,
-		ChunkSize:          1 << 20,
-		SessionTTL:         24 * time.Hour,
-		LoginFailPerMinute: 5,
+		Addr:           ":0",
+		DataDir:        dataDir,
+		CiphertextDir:  filepath.Join(dataDir, "ciphertext"),
+		BackupDir:      filepath.Join(dataDir, "backups"),
+		DBPath:         filepath.Join(dataDir, "app.db"),
+		KEKPath:        filepath.Join(dataDir, "kek"),
+		CookieSecure:   false, // 开发环境
+		MaxUploadBytes: 20 << 20,
+		ChunkSize:      1 << 20,
+		SessionTTL:     24 * time.Hour,
+		LoginFailPerMinute: func() int {
+			if opts.loginFailPerMinute > 0 {
+				return opts.loginFailPerMinute
+			}
+			return 5
+		}(),
 		TTSCacheDir:        filepath.Join(dataDir, "tts-cache"),
 		TTSMaxSegmentRunes: opts.maxSegRunes,
 		TTSDefaultSpeed:    1.0,
@@ -191,6 +205,11 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 			CookieSecure: false,
 		}
 	}
+	threshold := opts.blocklistThreshold
+	if threshold <= 0 {
+		threshold = 10
+	}
+	blockSvc := blocklist.New(database, opts.blocklistOn, time.Hour, threshold, 24*time.Hour, 5000)
 	srv := server.New(server.Deps{
 		Config: cfg, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, DB: database,
@@ -198,10 +217,11 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		Telemetry: telemetry.NewStore(database),
 		Stats:     stats.New(database, time.UTC),
 		LANPairs:  lan.NewStore(database, 5*time.Minute, 8),
+		Blocklist: blockSvc,
 	})
 	ts := httptest.NewServer(srv.Handler())
 	cleanup(ts.Close)
-	return &stack{ts: ts, dataDir: dataDir, sched: sched, db: database, books: bookSvc, tts: ttsSvc}
+	return &stack{ts: ts, dataDir: dataDir, sched: sched, db: database, books: bookSvc, tts: ttsSvc, blocklist: blockSvc}
 }
 
 func newStack(t *testing.T) *stack {

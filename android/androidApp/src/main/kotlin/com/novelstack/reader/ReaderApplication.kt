@@ -13,8 +13,12 @@ import com.novelstack.reader.di.platformModule
 import com.novelstack.reader.net.ApiEndpointManager
 import com.novelstack.reader.net.EndpointStore
 import com.novelstack.reader.net.NovelApi
+import com.novelstack.reader.platform.AndroidAppLock
 import com.novelstack.reader.platform.AndroidKeepAlive
 import com.novelstack.reader.platform.AndroidLanDiscovery
+import com.novelstack.reader.platform.AndroidPowerMonitor
+import com.novelstack.reader.platform.AndroidScreenGuard
+import com.novelstack.reader.platform.AndroidTextActions
 import com.novelstack.reader.platform.AudioSinkFactory
 import com.novelstack.reader.platform.DeviceKeyStore
 import com.novelstack.reader.platform.LocalDataWiper
@@ -40,6 +44,12 @@ import org.koin.core.context.startKoin
 class ReaderApplication : Application() {
 
     lateinit var state: AppState
+        private set
+
+    // 终端防御阶段：Activity 级能力由 MainActivity 绑定/解绑。
+    lateinit var appLock: AndroidAppLock
+        private set
+    lateinit var screenGuard: AndroidScreenGuard
         private set
 
     private lateinit var networkMonitor: NetworkMonitor
@@ -78,6 +88,12 @@ class ReaderApplication : Application() {
             }
         }
 
+        // 终端防御：设备能力装配（Activity 引用稍后由 MainActivity 绑定）。
+        appLock = AndroidAppLock()
+        screenGuard = AndroidScreenGuard()
+        val powerMonitor = AndroidPowerMonitor(this)
+        val textActions = AndroidTextActions(this)
+
         state = AppState(
             api = koin.get<NovelApi>(),
             keyStore = keyStore,
@@ -90,6 +106,10 @@ class ReaderApplication : Application() {
             keepAlive = keepAlive,
             telemetryControl = telemetryControl,
             lanDiscovery = AndroidLanDiscovery(this, koin.get<CoroutineScope>()),
+            powerMonitor = powerMonitor,
+            appLock = appLock,
+            screenGuard = screenGuard,
+            textActions = textActions,
         )
 
         networkMonitor = NetworkMonitor(this) { status -> state.onNetworkChanged(status) }

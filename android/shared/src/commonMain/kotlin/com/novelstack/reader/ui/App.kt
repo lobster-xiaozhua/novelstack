@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.draw.blur
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -29,13 +31,78 @@ fun NovelApp(state: AppState) {
     val screen by state.screen.collectAsState()
     val settings by state.settings.collectAsState()
     val systemDark = isSystemInDarkTheme()
+    val locked by state.locked.collectAsState()
+
+    // 终端防御：阅读/设置页防截屏（FLAG_SECURE）随页面切换。
+    androidx.compose.runtime.LaunchedEffect(screen) {
+        state.updateSecureFlag(screen)
+    }
+
     NovelTheme(dark = isDarkTheme(settings.theme, systemDark)) {
-        when (val s = screen) {
-            Screen.Login -> LoginScreen(state)
-            Screen.Search -> SearchScreen(state)
-            Screen.ServerSettings -> ServerSettingsScreen(state)
-            is Screen.Reader -> ReaderScreen(state, s.bookId)
-            else -> MainTabs(state, s)
+        Box(modifier = Modifier.fillMaxSize()) {
+            when (val s = screen) {
+                Screen.Login -> LoginScreen(state)
+                Screen.Search -> SearchScreen(state)
+                Screen.ServerSettings -> ServerSettingsScreen(state)
+                is Screen.Reader -> ReaderScreen(state, s.bookId)
+                else -> MainTabs(state, s)
+            }
+            // 应用锁：验证未通过时全屏模糊遮罩，内容不可见也不可操作。
+            if (locked) {
+                AppLockOverlay(state)
+            }
+        }
+    }
+}
+
+/**
+ * 生物识别遮罩：底层内容加高斯模糊并叠半透明层，点击遮罩重新发起验证。
+ * 失败时显示错误文案并提供「重试」，用户必须通过才能查阅书架与正文。
+ */
+@Composable
+private fun AppLockOverlay(state: AppState) {
+    var errorText by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<String?>(null) }
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // 内容整体模糊，遮住书架/正文；半径较大确保文字不可读。
+            .blur(28.dp)
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.82f))
+            .clickable {
+                state.unlockWithBiometric { _, msg ->
+                    errorText = msg.ifBlank { "验证失败，请重试" }
+                }
+            },
+        contentAlignment = androidx.compose.ui.Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(24.dp),
+        ) {
+            Text("🔒", style = MaterialTheme.typography.displayMedium)
+            Text("应用已锁定", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                "点击屏幕使用指纹 / 面容 / 设备密码解锁",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            errorText?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            }
+            androidx.compose.material3.Button(onClick = {
+                state.unlockWithBiometric { _, msg ->
+                    errorText = msg.ifBlank { "验证失败，请重试" }
+                }
+            }) {
+                Text(if (errorText == null) "解锁" else "重试")
+            }
+        }
+    }
+    // 首次进入自动拉起一次验证，避免用户还要多点一下。
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        state.unlockWithBiometric { _, msg ->
+            errorText = msg.ifBlank { "验证失败，请重试" }
         }
     }
 }

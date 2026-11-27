@@ -41,9 +41,14 @@ class TelemetryUploader(
     /**
      * 返回本次上传成功的条数；队列为空返回 0。
      * 网络错误/鉴权失败直接抛出，由调用方决定是否重试。
+     *
+     * @param crashOnly 低电量/省电模式下为 true：只上传崩溃/ANR，非致命事件静默堆积等下次。
      */
-    suspend fun uploadOnce(): Int {
-        val rows = repo.pending()
+    suspend fun uploadOnce(crashOnly: Boolean = false): Int {
+        var rows = repo.pending()
+        if (crashOnly) {
+            rows = rows.filter { TelemetryKind.isCrash(it.kind) }
+        }
         if (rows.isEmpty()) return 0
         val first = rows.first()
         val env = Envelope(

@@ -392,6 +392,23 @@ CREATE INDEX IF NOT EXISTS idx_lan_pair_owner ON lan_pair_codes(owner_id);
 CREATE INDEX IF NOT EXISTS idx_lan_pair_expires ON lan_pair_codes(expires_at);
 `,
 	},
+	{
+		Version: 11,
+		SQL: `
+-- 终端防御阶段：IP 熔断黑名单。
+-- 中间件在 1 小时窗口内累计 10 次 401/404 后写入，封禁 24 小时；
+-- 只存 IP、原因码与时间，不存请求路径/参数（避免把探测内容也记下来）。
+CREATE TABLE IF NOT EXISTS ip_blocklist (
+    ip          TEXT PRIMARY KEY,
+    reason      TEXT NOT NULL,
+    hits        INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    unblocked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ip_blocklist_expires ON ip_blocklist(expires_at);
+`,
+	},
 }
 
 // Open 打开（必要时创建）SQLite 数据库，启用 WAL 与 busy_timeout，并执行迁移。

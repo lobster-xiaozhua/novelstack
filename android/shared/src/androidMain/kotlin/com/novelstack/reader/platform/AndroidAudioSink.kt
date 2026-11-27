@@ -4,6 +4,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.media.PlaybackParams
+import com.novelstack.reader.app.AudioBufferPolicy
 
 /**
  * 用 AudioTrack 顺序播放 16-bit PCM。
@@ -39,7 +40,7 @@ class AndroidAudioSink : AudioSink {
                     .build(),
             )
             .setTransferMode(AudioTrack.MODE_STREAM)
-            .setBufferSizeInBytes(minBuf * 2)
+            .setBufferSizeInBytes(minBuf * AudioBufferPolicy.multiplier())
             .build()
         track = t
         t.play()

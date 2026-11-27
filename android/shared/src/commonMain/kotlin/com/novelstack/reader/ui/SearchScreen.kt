@@ -20,6 +20,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,6 +39,15 @@ import com.novelstack.reader.app.Screen
 fun SearchScreen(state: AppState) {
     val results by state.searchResults.collectAsState()
     var query by remember { mutableStateOf("") }
+    // 终端防御：从阅读页划词「本地搜索」进入时，预填查询词并触发检索。
+    val prefill by state.searchPrefill.collectAsState()
+    LaunchedEffect(prefill) {
+        if (prefill != null) {
+            query = prefill!!
+            state.search(prefill!!)
+            state.searchPrefill.value = null
+        }
+    }
 
     Scaffold(
         topBar = {

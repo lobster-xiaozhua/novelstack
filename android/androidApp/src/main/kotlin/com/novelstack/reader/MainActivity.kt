@@ -7,7 +7,7 @@ import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
 import android.view.Choreographer
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,7 +20,7 @@ import com.novelstack.reader.telemetry.Telemetry
 import com.novelstack.reader.telemetry.TelemetryKind
 import com.novelstack.reader.ui.NovelApp
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
 
     private var jankCallback: Choreographer.FrameCallback? = null
     /** 当前等待扫码结果的回调（扫码是一次性动作）。 */
@@ -38,7 +38,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // Android 15 起强制 Edge-to-Edge；显式开启保证 13/14 也一致，Insets 由 Compose 处理。
         enableEdgeToEdge()
-        val state = (application as ReaderApplication).state
+        val app = application as ReaderApplication
+        val state = app.state
+        // 终端防御：绑定 Activity 级能力（生物识别宿主 / FLAG_SECURE 窗口）。
+        app.appLock.attach(this)
+        app.screenGuard.attach(this)
 
         // 开始朗读时先拉起前台服务（保证切后台/锁屏不被杀）；服务内部再控制播放。
         state.onPlaybackStarted = { PlaybackService.start(this) }
@@ -69,11 +73,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // 应用锁：后台超过 30 秒回前台时要求重新验证。
+        (application as ReaderApplication).state.onEnterForeground(android.os.SystemClock.elapsedRealtime())
         // 每次回前台触发一次受约束的遥测上传（仅 UNMETERED 真正传输）。
         Telemetry.requestUpload()
     }
 
+    override fun onPause() {
+        // 应用锁：进入后台记时；FLAG_SECURE 保证最近任务缩略图不泄露。
+        (application as ReaderApplication).state.onEnterBackground(android.os.SystemClock.elapsedRealtime())
+        super.onPause()
+    }
+
     override fun onDestroy() {
+        val app = application as ReaderApplication
+        app.appLock.attach(null)
+        app.screenGuard.attach(null)
         jankCallback?.let { Choreographer.getInstance().removeFrameCallback(it) }
         jankCallback = null
         super.onDestroy()

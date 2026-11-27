@@ -20,6 +20,7 @@ import (
 	"novelstack/internal/audit"
 	"novelstack/internal/auth"
 	"novelstack/internal/backup"
+	"novelstack/internal/blocklist"
 	"novelstack/internal/books"
 	"novelstack/internal/config"
 	"novelstack/internal/cryptobox"
@@ -253,11 +254,15 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		}
 	}
 
+	// 终端防御阶段：IP 熔断。回环地址永不封禁，本机自测不会互相污染。
+	blockSvc := blocklist.New(database, cfg.BlocklistEnabled, cfg.BlocklistWindow,
+		cfg.BlocklistThreshold, cfg.BlocklistBanTTL, cfg.BlocklistMaxEntries)
+
 	srv := server.New(server.Deps{
 		Config: cfg, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, DB: database,
 		Devices: devSvc, Health: health, Scheduler: sched, Telemetry: telStore,
-		Stats: statsSvc, LANPairs: lanPairs, Discovery: discovery,
+		Stats: statsSvc, LANPairs: lanPairs, Discovery: discovery, Blocklist: blockSvc,
 	})
 	return &App{
 		Cfg: cfg, DB: database, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,

@@ -9,6 +9,7 @@ import Cache from './views/Cache.vue'
 import Devices from './views/Devices.vue'
 import Telemetry from './views/Telemetry.vue'
 import Stats from './views/Stats.vue'
+import Blocklist from './views/Blocklist.vue'
 
 const routes = [
   { path: '/', redirect: '/overview' },
@@ -21,6 +22,7 @@ const routes = [
   { path: '/devices', name: 'devices', component: Devices, meta: { title: '设备与配对' } },
   { path: '/telemetry', name: 'telemetry', component: Telemetry, meta: { title: '体验调优' } },
   { path: '/stats', name: 'stats', component: Stats, meta: { title: '阅读统计' } },
+  { path: '/blocklist', name: 'blocklist', component: Blocklist, meta: { title: 'IP 防护' } },
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 

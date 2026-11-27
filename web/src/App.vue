@@ -37,6 +37,7 @@ onMounted(async () => {
         <div class="group">维护</div>
         <router-link to="/cache"><i class="dot" />缓存管理</router-link>
         <router-link to="/devices"><i class="dot" />设备与配对</router-link>
+        <router-link to="/blocklist"><i class="dot" />IP 防护</router-link>
       </nav>
 
       <div class="side-foot">

@@ -20,6 +20,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -103,6 +104,46 @@ fun SettingsScreen(state: AppState) {
             )
             TextButton(onClick = { state.screen.value = Screen.ServerSettings }) {
                 Text("打开服务器设置")
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("安全与省电", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            val battery by state.power.collectAsState()
+            Text(
+                "电量 ${battery.batteryPercent}%${if (battery.isPowerSaveMode) " · 省电模式" else ""}" +
+                    " · ${if (battery.isLow) "低电量降级已生效" else "正常"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (battery.isLow) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SwitchRow(
+                label = "生物识别应用锁",
+                hint = if (state.appLockCapable()) "指纹/面容；后台超 30 秒回前台需重新验证" else "当前设备不支持或未录入生物特征",
+                checked = settings.appLockEnabled && state.appLockCapable(),
+                enabled = state.appLockCapable(),
+            ) {
+                state.updateSettings(settings.copy(appLockEnabled = it))
+            }
+            SwitchRow(
+                label = "防截屏保护",
+                hint = "阅读/设置页禁止截屏、录屏与最近任务缩略图",
+                checked = settings.secureScreen,
+            ) {
+                state.updateSettings(settings.copy(secureScreen = it))
+                state.reapplySecureFlag(Screen.Settings)
+            }
+            SwitchRow(
+                label = "翻页触感",
+                hint = "翻页微振动；低电量时自动关闭",
+                checked = settings.hapticsEnabled,
+            ) {
+                state.updateSettings(settings.copy(hapticsEnabled = it))
+            }
+            SwitchRow(
+                label = "移动网络省流量封面",
+                hint = "3G/4G 或低电量时封面只显示轻量占位，WiFi 下完整展示",
+                checked = settings.lowDataCover,
+            ) {
+                state.updateSettings(settings.copy(lowDataCover = it))
             }
 
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
@@ -299,6 +340,30 @@ fun SettingsScreen(state: AppState) {
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun SwitchRow(
+    label: String,
+    hint: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                hint,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(checked = checked, enabled = enabled, onCheckedChange = onChange)
     }
 }
 
