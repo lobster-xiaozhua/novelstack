@@ -67,6 +67,10 @@ export const revokeDevice = (id) =>
   request(`/api/admin/devices/${encodeURIComponent(id)}`, { method: 'DELETE' })
 export const createPairing = () => request('/api/admin/pairing', { method: 'POST' })
 
+// 第十阶段：局域网 6 位短码配对（含可扫码的 endpoint）
+export const createLanPairing = () => request('/api/admin/lan/pairing', { method: 'POST' })
+export const getLanInfo = () => request('/api/lan/info')
+
 // 第九阶段：阅读统计与数据导出
 export const getReadingStats = () => request('/api/stats/reading')
 export const getExportPreview = () => request('/api/admin/export/preview')

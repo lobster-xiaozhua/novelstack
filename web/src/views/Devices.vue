@@ -1,7 +1,8 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { createPairing, getDevices, revokeDevice } from '../api'
+import { createLanPairing, createPairing, getDevices, getLanInfo, revokeDevice } from '../api'
 import { ago, ts } from '../format'
+import { lanPairingPayload, qrSvg } from '../vendor/qr'
 
 const data = ref(null)
 const error = ref('')
@@ -11,6 +12,12 @@ const busy = ref(false)
 const copied = ref(false)
 const confirmRevoke = ref(null)
 let timer = null
+
+// 第十阶段：局域网 6 位短码配对
+const lanPairing = ref(null)
+const lanInfo = ref(null)
+const lanRemain = ref(0)
+const lanSvg = ref('')
 
 const devices = computed(() => data.value?.devices || [])
 const remain = ref(0)
@@ -51,6 +58,29 @@ async function copyCode() {
   }
 }
 
+async function makeLanPairing() {
+  busy.value = true
+  error.value = ''
+  try {
+    if (!lanInfo.value) lanInfo.value = await getLanInfo()
+    const p = await createLanPairing()
+    lanPairing.value = p
+    lanRemain.value = p.expires_in_s
+    const endpoint = p.endpoint || lanInfo.value?.endpoint || location.origin
+    lanSvg.value = qrSvg(lanPairingPayload(p.code, endpoint), 5)
+  } catch (e) {
+    error.value = e.message || String(e)
+  } finally {
+    busy.value = false
+  }
+}
+
+function copyLanPayload() {
+  if (!lanPairing.value) return
+  const endpoint = lanPairing.value.endpoint || lanInfo.value?.endpoint || location.origin
+  navigator.clipboard.writeText(lanPairingPayload(lanPairing.value.code, endpoint)).catch(() => {})
+}
+
 async function doRevoke() {
   if (!confirmRevoke.value) return
   busy.value = true
@@ -73,8 +103,10 @@ function statusOf(d) {
 
 onMounted(() => {
   load()
+  getLanInfo().then((i) => { lanInfo.value = i }).catch(() => {})
   timer = setInterval(() => {
     if (remain.value > 0) remain.value -= 1
+    if (lanRemain.value > 0) lanRemain.value -= 1
   }, 1000)
 })
 onUnmounted(() => clearInterval(timer))
@@ -92,6 +124,7 @@ onUnmounted(() => clearInterval(timer))
       </div>
       <div class="actions">
         <button class="btn ghost" :disabled="loading" @click="load">刷新</button>
+        <button class="btn ghost" :disabled="busy" @click="makeLanPairing">生成局域网码</button>
         <button class="btn primary" :disabled="busy" @click="makePairing">生成配对码</button>
       </div>
     </header>
@@ -110,6 +143,23 @@ onUnmounted(() => clearInterval(timer))
       <div class="pair-actions">
         <button class="btn ghost" @click="copyCode">{{ copied ? '已复制' : '复制' }}</button>
         <button class="btn ghost" @click="pairing = null">关闭</button>
+      </div>
+    </div>
+
+    <div v-if="lanPairing" class="card pairing lan-pair">
+      <div class="qr" v-html="lanSvg"></div>
+      <div class="lan-info">
+        <div class="label">局域网配对码（6 位，{{ Math.floor(lanRemain / 60) }}:{{ String(lanRemain % 60).padStart(2, '0') }}，绑定来源 IP）</div>
+        <div class="code">{{ lanPairing.code }}</div>
+        <div class="hint">
+          App「服务器设置 → 扫配对二维码」扫描上方二维码即可；
+          或在局域网发现里选本机后手动输入这 6 位数字。
+        </div>
+        <div class="hint mono" v-if="lanPairing.endpoint">{{ lanPairing.endpoint }}</div>
+        <div class="pair-actions" style="margin-top: 10px">
+          <button class="btn ghost" @click="copyLanPayload">复制扫码内容</button>
+          <button class="btn ghost" @click="lanPairing = null">关闭</button>
+        </div>
       </div>
     </div>
 
@@ -222,6 +272,23 @@ onUnmounted(() => clearInterval(timer))
 .pair-actions {
   display: flex;
   gap: 8px;
+}
+.lan-pair {
+  align-items: flex-start;
+  border-color: rgba(120, 200, 160, 0.45);
+}
+.qr {
+  background: #fff;
+  padding: 8px;
+  border-radius: 8px;
+  line-height: 0;
+  flex: 0 0 auto;
+}
+.qr svg {
+  display: block;
+}
+.lan-info {
+  flex: 1;
 }
 .note ul {
   margin: 8px 0 0;

@@ -9,6 +9,8 @@ import com.novelstack.reader.model.DiscoverResponse
 import com.novelstack.reader.model.FavoriteRequest
 import com.novelstack.reader.model.FavoriteResponse
 import com.novelstack.reader.model.HistoryResponse
+import com.novelstack.reader.model.LanInfo
+import com.novelstack.reader.model.LanPairRequest
 import com.novelstack.reader.model.LatestHash
 import com.novelstack.reader.model.LoginRequest
 import com.novelstack.reader.model.PrefetchRequest
@@ -53,12 +55,28 @@ class NovelApi(
     @Volatile
     private var token: String? = null
 
+    /**
+     * 配置主地址与凭证。
+     *
+     * 第十阶段：地址统一由 [ApiEndpointManager] 管理（含内网/公网双节点）。
+     * 这里保留 baseUrl 字段作为「manager 尚未安装」时的回退，并同步 token 到 manager。
+     */
     fun configure(server: String, token: String?) {
-        baseUrl = normalizeServer(server)
+        val normalized = normalizeServer(server)
+        baseUrl = normalized
         this.token = token
+        val mgr = ApiEndpointManager
+        if (mgr.hasConfig()) {
+            // 保留已有内网地址与探测结果，只替换主地址与 token。
+            mgr.configure(mgr.primaryUrl().ifBlank { normalized }, mgr.localUrl(), token.orEmpty())
+        }
     }
 
-    fun currentBaseUrl(): String = baseUrl
+    /** 当前实际使用的根地址（由双节点探测决定内网或公网）。 */
+    fun currentBaseUrl(): String {
+        val active = ApiEndpointManager.activeBaseUrl()
+        return active.ifBlank { baseUrl }
+    }
 
     fun hasToken(): Boolean = !token.isNullOrBlank()
 
@@ -71,13 +89,31 @@ class NovelApi(
         return json.decodeFromString(DeviceAuth.serializer(), resp.textOrThrow())
     }
 
+    // ---- 第十阶段：局域网发现与短码配对 ----
+
+    /** 用 6 位短码换取 device token（无需 session，短码自带 IP 绑定与限流）。 */
+    suspend fun lanPair(server: String, req: LanPairRequest): DeviceAuth {
+        val url = normalizeServer(server) + "/api/lan/pair"
+        val resp = client.post(url) {
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(LanPairRequest.serializer(), req))
+        }
+        return json.decodeFromString(DeviceAuth.serializer(), resp.textOrThrow())
+    }
+
+    /** 读取局域网发现信息（无需鉴权，只含地址）。失败返回 null。 */
+    suspend fun lanInfo(server: String): LanInfo? = runCatching {
+        val resp = client.get(normalizeServer(server) + "/api/lan/info")
+        json.decodeFromString(LanInfo.serializer(), resp.textOrThrow())
+    }.getOrNull()
+
     suspend fun manifest(since: Long): SyncManifest {
-        val resp = client.get("$baseUrl/api/sync/manifest?since=$since") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/sync/manifest?since=$since") { auth() }
         return json.decodeFromString(SyncManifest.serializer(), resp.textOrThrow())
     }
 
     suspend fun prefetch(bookId: String, indexes: List<Int>): PrefetchResponse {
-        val resp = client.post("$baseUrl/api/books/$bookId/chapters/prefetch") {
+        val resp = client.post("${currentBaseUrl()}/api/books/$bookId/chapters/prefetch") {
             auth()
             contentType(ContentType.Application.Json)
             setBody(json.encodeToString(PrefetchRequest.serializer(), PrefetchRequest(indexes)))
@@ -86,7 +122,7 @@ class NovelApi(
     }
 
     suspend fun putProgress(bookId: String, req: ProgressRequest): ProgressResponse {
-        val resp = client.put("$baseUrl/api/books/$bookId/progress") {
+        val resp = client.put("${currentBaseUrl()}/api/books/$bookId/progress") {
             auth()
             contentType(ContentType.Application.Json)
             setBody(json.encodeToString(ProgressRequest.serializer(), req))
@@ -95,7 +131,7 @@ class NovelApi(
     }
 
     suspend fun getProgress(bookId: String): ProgressDto? {
-        val resp = client.get("$baseUrl/api/books/$bookId/progress") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/books/$bookId/progress") { auth() }
         if (resp.status.value == 404) return null
         return json.decodeFromString(ProgressDto.serializer(), resp.textOrThrow())
     }
@@ -103,18 +139,18 @@ class NovelApi(
     // ---- 第八阶段：发现 / 足迹 / 收藏 / 版本 ----
 
     suspend fun history(): HistoryResponse {
-        val resp = client.get("$baseUrl/api/history") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/history") { auth() }
         return json.decodeFromString(HistoryResponse.serializer(), resp.textOrThrow())
     }
 
     suspend fun discover(): DiscoverResponse {
-        val resp = client.get("$baseUrl/api/discover") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/discover") { auth() }
         return json.decodeFromString(DiscoverResponse.serializer(), resp.textOrThrow())
     }
 
     /** 设置/取消收藏，返回服务端回显的状态。 */
     suspend fun setFavorite(bookId: String, favorite: Boolean): Boolean {
-        val resp = client.patch("$baseUrl/api/books/$bookId/favorite") {
+        val resp = client.patch("${currentBaseUrl()}/api/books/$bookId/favorite") {
             auth()
             contentType(ContentType.Application.Json)
             setBody(json.encodeToString(FavoriteRequest.serializer(), FavoriteRequest(favorite)))
@@ -125,18 +161,18 @@ class NovelApi(
 
     /** 阅读统计（今日/累计/连续天数/近 90 天）。 */
     suspend fun readingStats(): ReadingStats {
-        val resp = client.get("$baseUrl/api/stats/reading") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/stats/reading") { auth() }
         return json.decodeFromString(ReadingStats.serializer(), resp.textOrThrow())
     }
 
     suspend fun appVersion(): AppVersion {
-        val resp = client.get("$baseUrl/api/app/version") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/app/version") { auth() }
         return json.decodeFromString(AppVersion.serializer(), resp.textOrThrow())
     }
 
     /** 服务端未配置哈希时返回 null（客户端应提示错误，而不是安装未校验的包）。 */
     suspend fun latestHash(): LatestHash? {
-        val resp = client.get("$baseUrl/api/app/version/latest-hash") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/app/version/latest-hash") { auth() }
         if (resp.status.value == 404) return null
         return json.decodeFromString(LatestHash.serializer(), resp.textOrThrow())
     }
@@ -146,7 +182,7 @@ class NovelApi(
      * 非 2xx 抛 ApiException，由 WorkManager 决定重试。
      */
     suspend fun uploadTelemetry(gzipBody: ByteArray) {
-        val resp = client.post("$baseUrl/api/telemetry/batch") {
+        val resp = client.post("${currentBaseUrl()}/api/telemetry/batch") {
             auth()
             contentType(ContentType.Application.Json)
             header("Content-Encoding", "gzip")
@@ -157,20 +193,20 @@ class NovelApi(
     }
 
     suspend fun audioManifest(bookId: String, chapterIndex: Int): AudioManifest {
-        val resp = client.get("$baseUrl/api/books/$bookId/chapters/$chapterIndex/audio") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/books/$bookId/chapters/$chapterIndex/audio") { auth() }
         return json.decodeFromString(AudioManifest.serializer(), resp.textOrThrow())
     }
 
     suspend fun prepareAudio(bookId: String, chapterIndex: Int, speed: Float): PrepareResponse {
         val resp = client.post(
-            "$baseUrl/api/books/$bookId/chapters/$chapterIndex/audio/prepare?speed=$speed",
+            "${currentBaseUrl()}/api/books/$bookId/chapters/$chapterIndex/audio/prepare?speed=$speed",
         ) { auth() }
         return json.decodeFromString(PrepareResponse.serializer(), resp.textOrThrow())
     }
 
     /** 下载 NSAC 加密音频文件原文（不解密、不落盘）。 */
     suspend fun segmentBytes(key: String): ByteArray {
-        val resp = client.get("$baseUrl/api/tts/segments/$key") { auth() }
+        val resp = client.get("${currentBaseUrl()}/api/tts/segments/$key") { auth() }
         if (!resp.status.isSuccess()) throw errorOf(resp)
         return resp.bodyAsChannel().toByteArray()
     }

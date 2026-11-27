@@ -95,6 +95,17 @@ fun SettingsScreen(state: AppState) {
             )
 
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("服务器设置", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "修改服务端地址、剪贴板导入一键切换、局域网发现与 6 位码配对。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TextButton(onClick = { state.screen.value = Screen.ServerSettings }) {
+                Text("打开服务器设置")
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
             Text("配对与撤销", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
                 "• 新设备：在浏览器打开 /admin → 设备 → 生成一次性配对码，在登录页输入。\n" +

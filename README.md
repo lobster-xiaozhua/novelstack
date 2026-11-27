@@ -2174,3 +2174,121 @@ android/shared/src/
 6. **净化正则仍可能误伤**：例如规则写成 `第.*章` 会把正文里的「第一章节」也删掉。建议先用 `DryRun` 思路小范围验证——当前没有预览接口，只能改配置后重启观察。
 7. **导出是同步请求**：整库导出期间占用一个 HTTP 连接与一把解密锁，大库（>200 本）建议分批；`EXPORT_MAX_BOOKS` 默认 200 会直接拒绝超量请求。
 8. **双音色不跨段混读**：一个片段只会用一种音色。若对话与旁白在同一句里（「他说：」+ 引号内容被切在同一 100 字块内），切分仍按引号边界处理，不会出现半句换声。
+
+---
+
+## 21. 第十阶段：网络适配与动态根地址
+
+本阶段解决「换服务器要重装 App」「无公网无法配对」「多端时钟/地址各自写死」三类落地痛点。
+客户端不再硬编码任何 API 域名；服务端在局域网内可被自动发现，并用 6 位短码换取设备凭证。
+
+### 21.1 能力清单
+
+| 编号 | 能力 | 落点 |
+|---|---|---|
+| E1 | 动态根地址单例 `ApiEndpointManager` | 客户端 commonMain + Android SharedPreferences |
+| E1 | 手动改域名 / 剪贴板 JSON·Base64 导入 | 设置页「服务器设置」 |
+| E1 | 双节点探测：local/healthz 500ms 优先，不通降级公网 | OkHttp 拦截器 + TTL 缓存 |
+| E2 | mDNS `_novelstack._tcp` + UDP 广播发现 | 服务端 `internal/lan`；客户端 NsdManager |
+| E2 | 6 位短码配对（IP 绑定 + 一次性 + 限流） | `POST /api/lan/pair`；控制台二维码 |
+| E2 | 内网网段明文 / 自签证书豁免 | `network_security_config.xml` |
+
+### 21.2 动态根地址：不再有硬编码域名
+
+- `ApiEndpointManager`（commonMain 全局单例）持有 `primaryUrl`（公网）+ `localUrl`（内网）+ `deviceToken`，持久化到 `EndpointStore`（Android = SharedPreferences）。
+- `NovelApi` 所有请求都经 `currentBaseUrl()` 取地址，登录页默认值也来自管理器——代码里不再出现固定的生产 API 域名。
+- **剪贴板导入**：解析 `{"url":"...","local_url":"...","token":"..."}` 或其 Base64，一键原子切换地址与凭证（避免「换了服务器还带旧 token」引发一串 401）。`exportConfig()` 可导出 Base64 给其它设备。
+- **双节点降级**：OkHttp 拦截器在每次请求前探测 `local_url/healthz`（连接/读写均 500ms 超时）。通 → 改写本次请求 host/port 到内网；不通 → 走公网。探测结果带 10 秒 TTL 缓存，避免每请求都等待；引导类请求（登录、LAN 配对）不改写，防止连错服务器。
+
+### 21.3 局域网发现（mDNS + UDP 兜底）
+
+- 服务端 `internal/lan` 用标准库实现两条发现通道，不引入第三方依赖：
+  1. **mDNS**：组播 `224.0.0.251:5353` 应答 `_novelstack._tcp.`，返回 PTR/SRV/TXT/A，NsdManager 可直接发现；
+  2. **UDP 广播**：监听 `LAN_BROADCAST_PORT`（默认 5359），收到 `{"type":"probe"}` 回 `{"type":"answer",host,port,endpoint}`，应对国内 ROM 屏蔽组播的情况。
+- 只广播「地址 + 端口 + 服务名」，不含任何书籍数据或凭证。
+- 客户端 `AndroidLanDiscovery` 用 NsdManager 解析服务属性，同时发 UDP 探测兜底，两条结果合并去重。
+- 无可用内网地址（如纯 loopback 容器）时自动关闭发现服务，不阻断启动。
+
+### 21.4 6 位短码配对（低熵凭证的防护）
+
+现有一次性配对码是 `nsp_`+base64（64 位熵）。6 位数字只有约 20 位熵，**不能直接复用**，因此新增独立表 `lan_pair_codes`（迁移 v10）与四重防护：
+
+1. **绑定来源 IP**：生成与兑换必须来自同一 IP，短码被截屏后异地使用无效；
+2. **短 TTL**：默认 5 分钟（`LAN_PAIR_TTL_MINUTES`）；
+3. **一次性**：兑换成功后原子置 `used_at`，重放返回 401；
+4. **每 IP 限流**：`LAN_PAIR_PER_MINUTE`（默认 8）滑动窗口。
+
+数据库只存短码 SHA-256（带域分隔前缀），明文只在生成响应里出现一次。兑换成功后由 `devices.Store.Create` 签发与浏览器会话无关的长期 device token，后续权限与现有设备完全一致（只能读密文/元数据，不能访问 `/api/admin/*`）。
+
+**配对链路**：控制台「设备与配对 → 生成局域网码」→ 得到 6 位码 + 可扫码二维码（载荷 `{"v":1,"endpoint":"...","code":"..."}`，二维码由前端零依赖 `qrcode-generator` 本地生成，图像不上传）→ App「服务器设置 → 扫配对二维码」或「扫描局域网 + 手动输入 6 位码」→ 换取 token → 自动把发现到的内网地址设为 `localUrl`。
+
+### 21.5 内网明文与自签证书豁免
+
+Android 的 `network-security-config` 的 `<domain>` 不支持 CIDR 网段，而内网 IP 由 DHCP 动态分配、无法枚举。因此采用**全局允许明文 + 信任用户 CA**：
+
+- `cleartextTrafficPermitted="true"`：允许 `http://192.168.x.x` 直连；
+- `<certificates src="user"/>`：信任用户在系统里安装的自签根证书；
+- 公网地址仍由 `NovelApi.normalizeServer` 强制补 `https://`，明文只发生在用户显式输入 `http://` 内网地址时；
+- 正文始终是密文、token 只在内存与本地配置，不因明文传输而泄漏正文。
+
+若部署环境要求严格禁明文，把 `cleartextTrafficPermitted` 改回 `false` 并删除 `user` 证书源即可（局域网 http 直连随之失效）。
+
+### 21.6 文件树（本阶段新增 / 修改）
+
+```
+internal/lan/
+  pair.go            # 6 位短码：生成/兑换/IP 绑定/一次性/限流
+  ratelimit.go       # 每 IP 滑动窗口限流
+  dns.go             # 最小 DNS 编解码（A/PTR/SRV/TXT）
+  discovery.go       # mDNS 组播 + UDP 广播发现服务
+  *_test.go          # 短码、限流、DNS 应答单测
+internal/db/db.go                    # 迁移 v10：lan_pair_codes
+internal/config/config.go            # LAN_* 配置与校验
+internal/server/lan.go               # /api/admin/lan/pairing、/api/lan/pair、/api/lan/info
+internal/server/server.go            # 路由 + Deps.LANPairs/Discovery
+internal/app/app.go                  # 装配 + 生命周期（启动/关闭发现）
+android/shared/src/commonMain/.../net/
+  EndpointStore.kt                   # 配置存储抽象
+  ApiEndpointManager.kt              # 动态根地址单例
+android/shared/src/androidMain/.../net/
+  AndroidEndpointStore.kt            # SharedPreferences 实现
+  HttpClient.android.kt              # 500ms 探测 + host 改写拦截器
+android/shared/src/androidMain/.../platform/
+  AndroidLanDiscovery.kt             # NsdManager + UDP 兜底
+android/shared/src/commonMain/.../
+  app/LanDiscoveryController.kt
+  model/Models.kt                    # LanPairingPayload/LanInfo/LanService/LanPairRequest
+  ui/ServerSettingsScreen.kt         # 服务器设置页
+android/androidApp/.../
+  MainActivity.kt                    # ZXing 扫码回调
+  ReaderApplication.kt               # 注入 manager/discovery
+  AndroidManifest.xml                # 组播/相机权限
+  res/xml/network_security_config.xml# 内网明文豁免
+android/gradle/libs.versions.toml    # zxing 4.3.0
+web/src/views/Devices.vue            # 局域网码 + 二维码
+web/src/vendor/qr*.js                # 零依赖 QR 生成
+.env.example / README.md
+```
+
+### 21.7 测试与验收
+
+自动化：
+- `go test ./...`：`internal/lan`（短码一次性、IP 绑定、过期、限流、DNS 应答）与 `internal/server/stage10_test.go`（生成→兑换→重放失败、坏码拒绝、info 无鉴权）。
+- `:shared:testDebugUnitTest`：`ApiEndpointManagerTest` 9 例（双节点选择、TTL 缓存、JSON/Base64 导入、导出往返、LAN 载荷解析、地址规范化）。
+- `:androidApp:assembleRelease`（R8）、`npx vite build`。
+
+真机手工验收：
+1. 控制台「生成局域网码」→ 二维码出现；手机连同一 WiFi，App「服务器设置 → 扫配对二维码」→ 成功进入书库；
+2. 用 6 位码在 A 手机配对后，B 手机用同码应失败（一次性）；把码给不同 IP 的设备应失败（IP 绑定）；
+3. 设置里把主地址改成另一台服务器的 `http://192.168.x.x:8080` → 保存 → 同步走新地址；关掉那台服务器 → 自动降级回公网；
+4. 剪贴板导入 Base64 配置 → 一键切到另一台服务器（含 token，无需重新配对）；
+5. 无公网环境：关掉公网出口，仅靠局域网发现 + 6 位码完成首次配对与同步。
+
+### 21.8 已知限制
+
+1. **局域网 IP 动态变化**：DHCP 重分配后需重新生成配对码并发现；发现列表是即时的，不持久化。
+2. **mDNS 依赖系统支持**：部分定制 ROM 屏蔽组播，此时靠 UDP 广播兜底；两者都不可用时只能手动输入地址。
+3. **明文是全局放行**：为了覆盖动态内网 IP，`network_security_config` 对**所有**域名放开明文；公网地址靠 `https://` 前缀约束，但恶意中间人若能把地址改成 `http://` 仍有风险——请勿把 App 装到不可信环境。
+4. **6 位码仍有理论暴力空间**：IP 绑定 + 每 IP 每分钟 8 次 + 5 分钟有效，把同网段爆破成本抬高，但私有部署仍建议优先用长配对码。
+5. **ZXing 扫码需相机权限**：用户拒绝后只能手动输入 6 位码或剪贴板导入。
+6. **探测 TTL 内地址不刷新**：10 秒内内网恢复/断开不会立刻反映到下一次请求，需等 TTL 过期或手动改地址。

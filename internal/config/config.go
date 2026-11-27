@@ -159,6 +159,23 @@ type Config struct {
 	ReadingTZ string
 	// 导出单次最多包含的书籍数（防止一次请求把整个库打进内存）。
 	ExportMaxBooks int
+
+	// ---- 第十阶段：局域网发现与动态根地址 ----
+
+	// LANDiscovery 为 false 时完全关闭 UDP/mDNS 广播（默认开启）。
+	LANDiscovery bool
+	// LANBroadcastPort 是 UDP 广播监听/应答端口，默认 5359。
+	// 5353 通常被系统 mDNS 服务占用，这里用独立端口避免冲突。
+	LANBroadcastPort int
+	// LANPairTTL 是 6 位短码有效期，默认 5 分钟。
+	LANPairTTL time.Duration
+	// LANPairPerMinute 是短码兑换的每 IP 每分钟尝试上限，默认 8。
+	LANPairPerMinute int
+	// LANAdvertiseHost 显式指定广播出去的主机（IP 或域名）；
+	// 为空时由发现服务自动探测第一个非回环 IPv4。
+	LANAdvertiseHost string
+	// LANAdvertisePort 显式指定广播出去的 HTTP 端口；为空时用 Addr 里的端口。
+	LANAdvertisePort int
 }
 
 // voiceNamePattern 与 tts 包内的校验保持一致（配置阶段先挡一次，避免朗读时才 400）。
@@ -237,6 +254,13 @@ func FromEnv() (*Config, error) {
 
 		ReadingTZ:      envStr("READING_TZ", "Asia/Shanghai"),
 		ExportMaxBooks: envInt("EXPORT_MAX_BOOKS", 200),
+
+		LANDiscovery:     envBool("LAN_DISCOVERY", true),
+		LANBroadcastPort: envInt("LAN_BROADCAST_PORT", 5359),
+		LANPairTTL:       time.Duration(envInt("LAN_PAIR_TTL_MINUTES", 5)) * time.Minute,
+		LANPairPerMinute: envInt("LAN_PAIR_PER_MINUTE", 8),
+		LANAdvertiseHost: strings.TrimSpace(envStr("LAN_ADVERTISE_HOST", "")),
+		LANAdvertisePort: envInt("LAN_ADVERTISE_PORT", 0),
 	}
 	if c.ChunkSize < 64<<10 || c.ChunkSize > 16<<20 {
 		return nil, fmt.Errorf("CHUNK_SIZE 必须在 64KiB..16MiB 之间")
@@ -299,6 +323,18 @@ func FromEnv() (*Config, error) {
 	}
 	if c.TTSDialogueVoice != "" && !voiceNamePattern.MatchString(c.TTSDialogueVoice) {
 		return nil, fmt.Errorf("TTS_DIALOGUE_VOICE 只能包含字母、数字、下划线、点和连字符（≤64）")
+	}
+	if c.LANBroadcastPort < 1024 || c.LANBroadcastPort > 65535 {
+		return nil, fmt.Errorf("LAN_BROADCAST_PORT 必须在 1024..65535 之间")
+	}
+	if c.LANPairTTL < time.Minute || c.LANPairTTL > 30*time.Minute {
+		return nil, fmt.Errorf("LAN_PAIR_TTL_MINUTES 必须在 1..30 之间")
+	}
+	if c.LANPairPerMinute < 1 || c.LANPairPerMinute > 60 {
+		return nil, fmt.Errorf("LAN_PAIR_PER_MINUTE 必须在 1..60 之间")
+	}
+	if c.LANAdvertisePort < 0 || c.LANAdvertisePort > 65535 {
+		return nil, fmt.Errorf("LAN_ADVERTISE_PORT 必须在 0..65535 之间")
 	}
 	if c.AlertWebhook != "" {
 		u, err := url.Parse(c.AlertWebhook)

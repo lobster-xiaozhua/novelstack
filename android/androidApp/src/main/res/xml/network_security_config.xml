@@ -1,13 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  默认只允许 HTTPS。模拟器访问宿主机（10.0.2.2）与 localhost 允许明文，
-  方便本地联调；生产部署请用带证书的域名并从这里删掉明文例外。
+  第十阶段：局域网适配。
+
+  背景：App 需要在无公网环境下通过 http://192.168.x.x:port 访问局域网服务端，
+  且可能使用内部自签证书。Android 的 network-security-config <domain> 不支持 CIDR
+  网段，而内网 IP 由 DHCP 动态分配、无法枚举，因此这里采用「全局允许明文 + 信任用户 CA」：
+
+    - cleartextTrafficPermitted="true"：允许 http:// 明文，供局域网直连；
+    - trust-anchors 含 user：信任用户在系统里安装的自签根证书；
+    - 公网地址仍由 ApiEndpointManager.normalizeServer 强制补 https://，
+      明文只发生在用户显式输入 http:// 内网地址时。
+
+  安全边界：正文始终是密文，token 只在内存与本地配置，不因明文传输而泄漏正文。
+  若部署环境要求严格禁止明文，可把下面的 cleartextTrafficPermitted 改回 false，
+  并删除 user 证书源（局域网 http 直连将随之失效）。
 -->
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">10.0.2.2</domain>
-        <domain includeSubdomains="false">localhost</domain>
-        <domain includeSubdomains="false">127.0.0.1</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <!-- 信任用户安装的内部自签 CA（局域网 HTTPS 场景）。 -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
 </network-security-config>

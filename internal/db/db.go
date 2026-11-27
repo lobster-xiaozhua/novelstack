@@ -373,6 +373,25 @@ CREATE TABLE IF NOT EXISTS reading_daily (
 CREATE INDEX IF NOT EXISTS idx_reading_daily_owner_day ON reading_daily(owner_id, day);
 `,
 	},
+	{
+		Version: 10,
+		SQL: `
+-- 第十阶段：局域网配对短码（6 位数字）。
+-- 与 pairing_codes 分开：短码熵低，必须绑定来源 IP、限流、一次性且短 TTL；
+-- 这里只存 hash，不存明文。device token 仍由 devices 包签发。
+CREATE TABLE IF NOT EXISTS lan_pair_codes (
+    id         TEXT PRIMARY KEY,
+    owner_id   TEXT NOT NULL,
+    code_hash  TEXT NOT NULL UNIQUE,
+    client_ip  TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_lan_pair_owner ON lan_pair_codes(owner_id);
+CREATE INDEX IF NOT EXISTS idx_lan_pair_expires ON lan_pair_codes(expires_at);
+`,
+	},
 }
 
 // Open 打开（必要时创建）SQLite 数据库，启用 WAL 与 busy_timeout，并执行迁移。

@@ -18,6 +18,7 @@ import (
 	"novelstack/internal/books"
 	"novelstack/internal/config"
 	"novelstack/internal/devices"
+	"novelstack/internal/lan"
 	"novelstack/internal/legado"
 	"novelstack/internal/mobile"
 	"novelstack/internal/ops"
@@ -49,6 +50,10 @@ type Deps struct {
 	Telemetry *telemetry.Store
 	// Stats 提供阅读统计（今日/累计/连续天数）；为 nil 时接口返回 503。
 	Stats *stats.Service
+	// LANPairs 管理 6 位局域网配对短码；为 nil 时 LAN 配对接口返回 503。
+	LANPairs *lan.Store
+	// Discovery 是局域网广播服务，仅用于把地址暴露给 /api/lan/info；可为 nil。
+	Discovery *lan.Discovery
 }
 
 // Server 持有全部依赖并暴露 http.Handler。
@@ -68,6 +73,8 @@ type Server struct {
 	health    *ops.HealthStore
 	telemetry *telemetry.Store
 	stats     *stats.Service
+	lanPairs  *lan.Store
+	discovery *lan.Discovery
 	scheduler interface {
 		RunOnce(ctx context.Context) (*backup.CreateResult, error)
 	}
@@ -92,6 +99,8 @@ func New(d Deps) *Server {
 		health:    d.Health,
 		telemetry: d.Telemetry,
 		stats:     d.Stats,
+		lanPairs:  d.LANPairs,
+		discovery: d.Discovery,
 		scheduler: d.Scheduler,
 		mux:       http.NewServeMux(),
 	}
@@ -126,6 +135,11 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/books/{id}/chapters/{index}/audio", s.requireAuth(s.handleAudioManifest))
 	s.mux.HandleFunc("POST /api/books/{id}/chapters/{index}/audio/prepare", s.requireAuth(s.handleAudioPrepare))
 	s.mux.HandleFunc("GET /api/tts/segments/{key}", s.requireAuth(s.handleAudioSegment))
+
+	// 第十阶段：局域网发现与短码配对（无需 session；短码兑换自带限流与 IP 绑定）。
+	s.mux.HandleFunc("POST /api/admin/lan/pairing", s.requireSession(s.handleLANPairingCreate))
+	s.mux.HandleFunc("POST /api/lan/pair", s.handleLANPair)
+	s.mux.HandleFunc("GET /api/lan/info", s.handleLANInfo)
 
 	// 第八阶段：客户端体验与书库运营（只读元数据/进度，不含正文）。
 	s.mux.HandleFunc("GET /api/discover", s.requireAuth(s.handleDiscover))

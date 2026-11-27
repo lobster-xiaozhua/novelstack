@@ -7,6 +7,10 @@
 pluginManagement {
     val mirror = System.getenv("NOVELSTACK_MAVEN_MIRROR").orEmpty()
     repositories {
+        val googleMirror = System.getenv("NOVELSTACK_GOOGLE_MIRROR").orEmpty()
+        if (googleMirror.isNotBlank()) {
+            maven { url = uri(googleMirror) }
+        }
         if (mirror.isNotBlank()) {
             maven { url = uri(mirror) }
         }
@@ -26,6 +30,10 @@ dependencyResolutionManagement {
     val mirror = System.getenv("NOVELSTACK_MAVEN_MIRROR").orEmpty()
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        val googleMirror = System.getenv("NOVELSTACK_GOOGLE_MIRROR").orEmpty()
+        if (googleMirror.isNotBlank()) {
+            maven { url = uri(googleMirror) }
+        }
         if (mirror.isNotBlank()) {
             maven { url = uri(mirror) }
         }

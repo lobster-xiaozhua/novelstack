@@ -43,6 +43,7 @@ sealed interface Screen {
     data object Search : Screen
     data object Settings : Screen
     data object Stats : Screen
+    data object ServerSettings : Screen
     data class Reader(val bookId: String) : Screen
 }
 
@@ -118,6 +119,8 @@ class AppState(
     private val keepAlive: KeepAliveController? = null,
     /** 第九阶段：遥测统计/清空/立即上传。 */
     private val telemetryControl: TelemetryControl? = null,
+    /** 第十阶段：局域网服务发现（Android 实现；其它平台传 null）。 */
+    private val lanDiscovery: LanDiscoveryController? = null,
 ) {
     private var store: ReaderRepository = storeFactory()
 
@@ -157,6 +160,14 @@ class AppState(
     val offlinePrompt = MutableStateFlow<OfflineProgressPrompt?>(null)
     val telemetryStats = MutableStateFlow<com.novelstack.reader.telemetry.TelemetryStats?>(null)
 
+    // ---- 第十阶段：局域网发现与动态根地址 ----
+    /** 发现到的局域网服务列表（NsdManager + UDP 广播）。 */
+    val lanServices = MutableStateFlow<List<com.novelstack.reader.model.LanService>>(emptyList())
+    /** 当前实际使用的节点是否为内网（供设置页展示）。 */
+    val usingLocalEndpoint = MutableStateFlow(false)
+    /** 服务器设置页的操作反馈。 */
+    val endpointMessage = MutableStateFlow<String?>(null)
+
     /** 只有不计量网络才允许预读/批量同步，避免偷跑流量。 */
     val canPrefetch: Boolean get() = network.value == NetworkStatus.Online
 
@@ -191,6 +202,12 @@ class AppState(
 
     /** 亮度调节钩子：由 Android 平台层设置（android.view.Window#screenBrightness）。 */
     var onBrightnessChange: ((Float) -> Unit)? = null
+
+    /**
+     * 二维码扫描钩子：由 Android MainActivity 设置（ZXing CaptureActivity）。
+     * commonMain 只声明「扫到文本后回调」，不引用任何平台类型。
+     */
+    var onScanQr: ((success: (String) -> Unit) -> Unit)? = null
 
     /** UI 统一入口：先通知平台拉起前台服务，再开始朗读。 */
     fun ttsStart(bookId: String, chapterIndex: Int, speed: Float, fromSegment: Int = 0) {
@@ -233,12 +250,20 @@ class AppState(
     }
 
     private suspend fun bootstrap() {
-        val server = store.kvGet("server_url")
-        val token = store.kvGet("device_token")
-        serverUrl.value = server ?: ""
+        // 第十阶段：优先从 ApiEndpointManager 读；首次升级时从旧 kv 迁移一次。
+        val mgr = com.novelstack.reader.net.ApiEndpointManager
+        val server = mgr.primaryUrl().ifBlank { store.kvGet("server_url") ?: "" }
+        val token = mgr.deviceToken().ifBlank { store.kvGet("device_token") ?: "" }
+        val localUrl = mgr.localUrl()
+        if (server.isNotBlank() && mgr.primaryUrl().isBlank()) {
+            // 迁移：旧版本只有 kv，没有 endpoint 配置。
+            mgr.configure(server, "", token)
+        }
+        serverUrl.value = server
         deviceId.value = store.kvGet("device_id") ?: ""
         Telemetry.updateDeviceId(deviceId.value)
-        if (server.isNullOrBlank() || token.isNullOrBlank()) {
+        usingLocalEndpoint.value = mgr.isLocalActive()
+        if (server.isBlank() || token.isBlank()) {
             screen.value = Screen.Login
             return
         }
@@ -289,6 +314,10 @@ class AppState(
                         publicKey = keyStore.publicKeyPem(),
                     ),
                 )
+                // 第十阶段：保留已有内网地址（若有），只更新主地址与 token。
+                val mgr = com.novelstack.reader.net.ApiEndpointManager
+                val localUrl = mgr.localUrl()
+                mgr.configure(normal, localUrl, auth.token)
                 api.configure(normal, auth.token)
                 store.kvPut("server_url", normal)
                 store.kvPut("device_token", auth.token)
@@ -352,6 +381,7 @@ class AppState(
         books.value = store.listBooks()
         lastSyncAt.value = Clock.System.now().toEpochMilliseconds()
         refreshCachedIds()
+        refreshEndpointState()
         flushProgress()
     }
 
@@ -866,6 +896,167 @@ class AppState(
         }
     }
 
+    // ---- 第十阶段：局域网发现 / 动态根地址 / 短码配对 ----
+
+    /** 当前生效的根地址（供设置页展示）。 */
+    fun currentEndpoint(): String = com.novelstack.reader.net.ApiEndpointManager.activeBaseUrl()
+
+    /** 当前是否走内网节点（供设置页刷新）。 */
+    fun refreshEndpointState() {
+        usingLocalEndpoint.value = com.novelstack.reader.net.ApiEndpointManager.isLocalActive()
+    }
+
+    /**
+     * 手动修改服务器地址（公网主地址）。
+     * 不清空 token：同一服务器的地址变更不应强制重新配对。
+     */
+    fun setPrimaryServer(server: String) {
+        val mgr = com.novelstack.reader.net.ApiEndpointManager
+        val normalized = com.novelstack.reader.net.NovelApi.normalizeServer(server)
+        if (normalized.isBlank()) {
+            endpointMessage.value = "服务器地址不能为空"
+            return
+        }
+        mgr.configure(normalized, mgr.localUrl(), mgr.deviceToken())
+        store.kvPut("server_url", normalized)
+        serverUrl.value = normalized
+        api.configure(normalized, mgr.deviceToken().ifBlank { null })
+        refreshEndpointState()
+        endpointMessage.value = "主服务器已设为 $normalized"
+    }
+
+    /** 设置/清除内网地址（双节点降级的探测目标）。 */
+    fun setLocalServer(local: String) {
+        val mgr = com.novelstack.reader.net.ApiEndpointManager
+        val normalized = if (local.isBlank()) "" else com.novelstack.reader.net.NovelApi.normalizeServer(local)
+        mgr.configure(mgr.primaryUrl(), normalized, mgr.deviceToken())
+        refreshEndpointState()
+        endpointMessage.value = if (normalized.isBlank()) "已关闭内网节点" else "内网节点已设为 $normalized"
+    }
+
+    /** 从剪贴板文本解析并一键切换服务器（JSON 或 base64(JSON)）。 */
+    fun importEndpoint(raw: String) {
+        val mgr = com.novelstack.reader.net.ApiEndpointManager
+        val imp = mgr.parseImport(raw)
+        if (imp == null) {
+            endpointMessage.value = "无法解析：请粘贴包含 url 与 token 的 JSON 或 Base64 文本"
+            return
+        }
+        val primary = com.novelstack.reader.net.NovelApi.normalizeServer(imp.primary())
+        mgr.configure(primary, imp.localUrl, imp.resolvedToken())
+        api.configure(primary, imp.resolvedToken().ifBlank { null })
+        store.kvPut("server_url", primary)
+        if (imp.resolvedToken().isNotBlank()) store.kvPut("device_token", imp.resolvedToken())
+        serverUrl.value = primary
+        refreshEndpointState()
+        endpointMessage.value = "已切换服务器：$primary${imp.name.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}"
+        // 切换服务器后重新同步一次；凭证失效会由 sync 内部处理。
+        scope.launch {
+            runCatching { syncInternal() }.onFailure {
+                endpointMessage.value = "已切换服务器，但首次同步失败：${friendly(it)}"
+            }
+        }
+    }
+
+    /** 导出当前配置文本（base64 JSON），供用户复制到其它设备。 */
+    fun exportEndpoint(): String = com.novelstack.reader.net.ApiEndpointManager.exportConfig()
+
+    /** 开始/停止局域网发现。 */
+    fun startLanDiscovery() {
+        val c = lanDiscovery ?: run {
+            endpointMessage.value = "当前平台不支持局域网发现"
+            return
+        }
+        c.start { services ->
+            lanServices.value = services
+        }
+    }
+
+    fun stopLanDiscovery() {
+        lanDiscovery?.stop()
+    }
+
+    /** 用发现的某台服务器 + 6 位短码完成配对。 */
+    fun pairLanService(service: com.novelstack.reader.model.LanService, code: String, deviceName: String) {
+        if (busy.value) return
+        val digits = code.trim()
+        if (digits.length != 6 || digits.any { it !in '0'..'9' }) {
+            endpointMessage.value = "配对码必须是 6 位数字"
+            return
+        }
+        error.value = null
+        busy.value = true
+        scope.launch {
+            try {
+                keyStore.ensureKeys()
+                val auth = api.lanPair(
+                    service.endpoint,
+                    com.novelstack.reader.model.LanPairRequest(
+                        pairingCode = digits,
+                        deviceName = deviceName.ifBlank { "Android 阅读器" },
+                        publicKey = keyStore.publicKeyPem(),
+                    ),
+                )
+                // 配对成功：把发现到的内网地址设为 localUrl，公网地址保留或置空。
+                val mgr = com.novelstack.reader.net.ApiEndpointManager
+                val primary = mgr.primaryUrl()
+                mgr.configure(primary, service.endpoint, auth.token)
+                api.configure(primary.ifBlank { service.endpoint }, auth.token)
+                store.kvPut("server_url", primary.ifBlank { service.endpoint })
+                store.kvPut("device_token", auth.token)
+                store.kvPut("device_id", auth.device.id)
+                store.kvPut("device_name", auth.device.name)
+                serverUrl.value = primary.ifBlank { service.endpoint }
+                deviceId.value = auth.device.id
+                Telemetry.updateDeviceId(auth.device.id)
+                Telemetry.requestUpload()
+                stopLanDiscovery()
+                refreshEndpointState()
+                endpointMessage.value = "局域网配对成功：${service.name}"
+                syncInternal()
+                screen.value = Screen.Library
+            } catch (e: Throwable) {
+                endpointMessage.value = "配对失败：${friendly(e)}"
+            } finally {
+                busy.value = false
+            }
+        }
+    }
+
+    /** 唤起二维码扫描，扫到 LAN 载荷后直接配对。 */
+    fun scanQrToPair(deviceName: String) {
+        val scanner = onScanQr
+        if (scanner == null) {
+            endpointMessage.value = "当前平台不支持二维码扫描，请手动输入 6 位码"
+            return
+        }
+        scanner { raw ->
+            val payload = com.novelstack.reader.net.ApiEndpointManager.parseLanPairing(raw)
+            if (payload == null) {
+                endpointMessage.value = "二维码不是有效的配对码（应为控制台生成的 JSON）"
+            } else {
+                pairFromPayload(raw, deviceName)
+            }
+        }
+    }
+
+    /** 用剪贴板/二维码里的 LAN 载荷完成配对。 */
+    fun pairFromPayload(raw: String, deviceName: String) {
+        val mgr = com.novelstack.reader.net.ApiEndpointManager
+        val payload = mgr.parseLanPairing(raw)
+        if (payload == null) {
+            endpointMessage.value = "无法解析配对二维码：请扫描控制台生成的二维码"
+            return
+        }
+        val service = com.novelstack.reader.model.LanService(
+            name = payload.name.ifBlank { "NovelStack" },
+            host = "",
+            port = 0,
+            endpoint = payload.endpoint,
+        )
+        pairLanService(service, payload.code, deviceName)
+    }
+
     // ---- 系统保活 ----
 
     fun keepAliveInfo(): KeepAliveInfo? = keepAlive?.let {
@@ -896,6 +1087,7 @@ class AppState(
             wiper.wipeAll()
             keyStore.wipe()
             store = storeFactory()
+            com.novelstack.reader.net.ApiEndpointManager.clear()
             api.configure("", null)
             books.value = emptyList()
             reader.value = ReaderUiState()
@@ -907,6 +1099,9 @@ class AppState(
             readingStats.value = null
             cachedIds.value = emptySet()
             offlinePrompt.value = null
+            lanServices.value = emptyList()
+            usingLocalEndpoint.value = false
+            endpointMessage.value = null
             NetworkCircuit.clear()
             serverUrl.value = ""
             deviceId.value = ""

@@ -10,8 +10,11 @@ import com.novelstack.reader.app.TelemetryControl
 import com.novelstack.reader.data.createReaderStore
 import com.novelstack.reader.di.appModule
 import com.novelstack.reader.di.platformModule
+import com.novelstack.reader.net.ApiEndpointManager
+import com.novelstack.reader.net.EndpointStore
 import com.novelstack.reader.net.NovelApi
 import com.novelstack.reader.platform.AndroidKeepAlive
+import com.novelstack.reader.platform.AndroidLanDiscovery
 import com.novelstack.reader.platform.AudioSinkFactory
 import com.novelstack.reader.platform.DeviceKeyStore
 import com.novelstack.reader.platform.LocalDataWiper
@@ -49,6 +52,8 @@ class ReaderApplication : Application() {
             modules(platformModule(this@ReaderApplication), appModule())
         }.koin
         val ctx = this
+        // 第十阶段：先装好动态根地址单例，后续 NovelApi / AppState / 拦截器都从它取地址。
+        ApiEndpointManager.install(koin.get<EndpointStore>(), koin.get<Json>())
         val keyStore = koin.get<DeviceKeyStore>()
 
         // ---- 遥测：先装配（崩溃处理器要能在 AppState 之前工作）----
@@ -84,6 +89,7 @@ class ReaderApplication : Application() {
             appUpdater = com.novelstack.reader.update.AndroidAppUpdater(this),
             keepAlive = keepAlive,
             telemetryControl = telemetryControl,
+            lanDiscovery = AndroidLanDiscovery(this, koin.get<CoroutineScope>()),
         )
 
         networkMonitor = NetworkMonitor(this) { status -> state.onNetworkChanged(status) }

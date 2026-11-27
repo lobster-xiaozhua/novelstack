@@ -105,6 +105,8 @@ dependencies {
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.media)
+    // 第十阶段：扫描控制台配对二维码（ZXing，纯本地解码，不上传图像）。
+    implementation(libs.zxing.android)
     implementation(libs.koin.android)
     debugImplementation(compose.uiTooling)
 }

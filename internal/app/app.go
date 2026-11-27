@@ -25,6 +25,7 @@ import (
 	"novelstack/internal/cryptobox"
 	"novelstack/internal/db"
 	"novelstack/internal/devices"
+	"novelstack/internal/lan"
 	"novelstack/internal/legado"
 	"novelstack/internal/ops"
 	"novelstack/internal/purge"
@@ -64,6 +65,8 @@ type App struct {
 	TelemetrySched *telemetry.Scheduler
 	// Stats 是阅读统计（今日/累计/连续天数）。
 	Stats *stats.Service
+	// LANDiscovery 是第十阶段的局域网广播服务；关闭时为 nil。
+	LANDiscovery *lan.Discovery
 
 	ttsReclaimStop chan struct{}
 }
@@ -229,18 +232,51 @@ func New(ctx context.Context, opts Options) (*App, error) {
 	readingLoc, _ := time.LoadLocation(cfg.ReadingTZ)
 	statsSvc := stats.New(database, readingLoc)
 
+	// ---- 第十阶段：局域网短码与发现 ----
+	lanPairs := lan.NewStore(database, cfg.LANPairTTL, cfg.LANPairPerMinute)
+	var discovery *lan.Discovery
+	if cfg.LANDiscovery {
+		advertisePort := cfg.LANAdvertisePort
+		if advertisePort <= 0 {
+			advertisePort = addrPort(cfg.Addr)
+		}
+		discovery, err = lan.NewDiscovery(ctx, lan.DiscoveryOptions{
+			InstanceName:  "NovelStack-" + strconv.Itoa(advertisePort),
+			Host:          cfg.LANAdvertiseHost,
+			Port:          advertisePort,
+			BroadcastPort: cfg.LANBroadcastPort,
+		})
+		if err != nil {
+			// 无可用内网地址（如纯 loopback 环境）不阻断启动，仅关闭发现。
+			log.Printf("lan discovery disabled: %v", err)
+			discovery = nil
+		}
+	}
+
 	srv := server.New(server.Deps{
 		Config: cfg, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, DB: database,
 		Devices: devSvc, Health: health, Scheduler: sched, Telemetry: telStore,
-		Stats: statsSvc,
+		Stats: statsSvc, LANPairs: lanPairs, Discovery: discovery,
 	})
 	return &App{
 		Cfg: cfg, DB: database, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, Devices: devSvc,
 		Scheduler: sched, Health: health, Server: srv,
 		Telemetry: telStore, TelemetrySched: telSched, Stats: statsSvc,
+		LANDiscovery: discovery,
 	}, nil
+}
+
+// addrPort 从 ":8080" / "0.0.0.0:8080" 中取端口；解析失败返回 0。
+func addrPort(addr string) int {
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		n, err := strconv.Atoi(strings.TrimSpace(addr[i+1:]))
+		if err == nil {
+			return n
+		}
+	}
+	return 0
 }
 
 // newAutoBackupScheduler 装配每日备份调度器。自动备份已开启但口令缺失/不可用时，
@@ -282,6 +318,14 @@ func (a *App) StartBackground() {
 		a.TelemetrySched.Start()
 	}
 	a.startTTSCacheReclaim()
+	if a.LANDiscovery != nil {
+		if err := a.LANDiscovery.Start(); err != nil {
+			log.Printf("lan discovery start failed: %v", err)
+		} else {
+			log.Printf("lan discovery: %s (mDNS _novelstack._tcp + UDP %d)",
+				a.LANDiscovery.Endpoint(), a.Cfg.LANBroadcastPort)
+		}
+	}
 }
 
 // startTTSCacheReclaim 每 6 小时回收一次「所属书籍已软删除」的音频缓存。
@@ -337,6 +381,10 @@ func (a *App) Close() {
 	if a.ttsReclaimStop != nil {
 		close(a.ttsReclaimStop)
 		a.ttsReclaimStop = nil
+	}
+	if a.LANDiscovery != nil {
+		a.LANDiscovery.Close()
+		a.LANDiscovery = nil
 	}
 	if a.Search != nil {
 		a.Search.Close()

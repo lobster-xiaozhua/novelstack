@@ -40,7 +40,13 @@ fun LoginScreen(state: AppState) {
     val busy by state.busy.collectAsState()
     val error by state.error.collectAsState()
 
-    var server by remember { mutableStateOf("http://10.0.2.2:8080") }
+    // 第十阶段：不再硬编码 API 域名；优先用已保存的地址，否则留空由用户输入。
+    var server by remember {
+        mutableStateOf(
+            com.novelstack.reader.net.ApiEndpointManager.primaryUrl()
+                .ifBlank { com.novelstack.reader.net.ApiEndpointManager.activeBaseUrl() }
+        )
+    }
     var username by remember { mutableStateOf("admin") }
     var password by remember { mutableStateOf("") }
     var pairing by remember { mutableStateOf("") }

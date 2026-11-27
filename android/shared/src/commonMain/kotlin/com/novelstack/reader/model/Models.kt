@@ -257,3 +257,42 @@ data class LatestHash(
     val version: String = "",
     val sha256: String = "",
 )
+
+// ---- 第十阶段：局域网发现与动态根地址 ----
+
+/** LAN 配对二维码/剪贴板载荷：{"v":1,"endpoint":"http://...","code":"123456"} */
+@Serializable
+data class LanPairingPayload(
+    val v: Int = 1,
+    val endpoint: String = "",
+    val code: String = "",
+    val name: String = "",
+)
+
+/** GET /api/lan/info 的返回（只含地址信息，无凭证）。 */
+@Serializable
+data class LanInfo(
+    val enabled: Boolean = false,
+    val service: String = "",
+    val name: String = "",
+    val host: String = "",
+    val port: Int = 0,
+    val endpoint: String = "",
+    @SerialName("udp_port") val udpPort: Int = 0,
+)
+
+/** NsdManager 发现的局域网服务（commonMain 表示）。 */
+data class LanService(
+    val name: String,
+    val host: String,
+    val port: Int,
+    val endpoint: String,
+)
+
+/** POST /api/lan/pair 的请求体。 */
+@Serializable
+data class LanPairRequest(
+    @SerialName("pairing_code") val pairingCode: String,
+    @SerialName("device_name") val deviceName: String = "",
+    @SerialName("public_key") val publicKey: String = "",
+)

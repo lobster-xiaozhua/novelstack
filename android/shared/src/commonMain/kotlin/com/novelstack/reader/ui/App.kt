@@ -33,6 +33,7 @@ fun NovelApp(state: AppState) {
         when (val s = screen) {
             Screen.Login -> LoginScreen(state)
             Screen.Search -> SearchScreen(state)
+            Screen.ServerSettings -> ServerSettingsScreen(state)
             is Screen.Reader -> ReaderScreen(state, s.bookId)
             else -> MainTabs(state, s)
         }

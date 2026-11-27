@@ -10,8 +10,11 @@ import android.view.Choreographer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.novelstack.reader.playback.PlaybackService
 import com.novelstack.reader.telemetry.Telemetry
 import com.novelstack.reader.telemetry.TelemetryKind
@@ -20,6 +23,16 @@ import com.novelstack.reader.ui.NovelApp
 class MainActivity : ComponentActivity() {
 
     private var jankCallback: Choreographer.FrameCallback? = null
+    /** 当前等待扫码结果的回调（扫码是一次性动作）。 */
+    private var pendingQrResult: ((String) -> Unit)? = null
+
+    private val qrLauncher = registerForActivityResult(ScanContract()) { result ->
+        val content = result.contents
+        if (content != null) {
+            pendingQrResult?.invoke(content)
+        }
+        pendingQrResult = null
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,6 +46,16 @@ class MainActivity : ComponentActivity() {
         // 第八阶段：阅读页左右侧上下滑动调节系统亮度（作用于本 Activity 窗口）。
         state.onBrightnessChange = { value ->
             window.attributes = window.attributes.apply { screenBrightness = value }
+        }
+
+        // 第十阶段：扫描控制台配对二维码（ZXing，纯本地解码）。
+        state.onScanQr = { onResult ->
+            pendingQrResult = onResult
+            val options = ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                .setPrompt("扫描控制台生成的服务端配对二维码")
+                .setBeepEnabled(false)
+            qrLauncher.launch(options)
         }
 
         // Android 13+ 通知权限：媒体通知与同步通知都需要用户授权。

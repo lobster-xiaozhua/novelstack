@@ -31,6 +31,7 @@ import (
 	"novelstack/internal/cryptobox"
 	"novelstack/internal/db"
 	"novelstack/internal/devices"
+	"novelstack/internal/lan"
 	"novelstack/internal/legado"
 	"novelstack/internal/ops"
 	"novelstack/internal/purge"
@@ -196,6 +197,7 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		Devices: devices.NewStore(database), Health: health, Scheduler: sched,
 		Telemetry: telemetry.NewStore(database),
 		Stats:     stats.New(database, time.UTC),
+		LANPairs:  lan.NewStore(database, 5*time.Minute, 8),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	cleanup(ts.Close)
