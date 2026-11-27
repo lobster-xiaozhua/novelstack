@@ -204,12 +204,12 @@ func (s *Store) CoverageAll(ctx context.Context) ([]CoverageRow, error) {
 	return out, rows.Err()
 }
 
-// ChapterETag 由「书籍密文身份 + 章节偏移」导出，章节内容变化时必然变化。
-// 书籍重新上传会得到新的 bookID 与新的 SHA-256，因此同一 bookID 下 ETag 稳定。
-func ChapterETag(b *Book, c chapterscan.Chapter) string {
+// ChapterETag 由「书籍密文身份 + 章节偏移 + 净化规则指纹」导出。
+// 章节内容或净化规则变化时 ETag 必然变化，客户端缓存随之失效。
+func ChapterETag(b *Book, c chapterscan.Chapter, variant string) string {
 	h := sha256.New()
-	fmt.Fprintf(h, "novelstack-chapter-v1|%s|%s|%d|%d|%d|%d",
-		b.ID, b.SHA256, b.ChunkSize, c.Index, c.Start, c.End)
+	fmt.Fprintf(h, "novelstack-chapter-v1|%s|%s|%d|%d|%d|%d|%s",
+		b.ID, b.SHA256, b.ChunkSize, c.Index, c.Start, c.End, variant)
 	return `"` + hex.EncodeToString(h.Sum(nil))[:32] + `"`
 }
 
@@ -278,7 +278,7 @@ func (svc *Service) Chapters(w http.ResponseWriter, r *http.Request, bookID, use
 	for _, c := range rows {
 		out = append(out, ChapterRow{
 			Index: c.Index, Title: c.Title, Chars: c.Chars, WordCount: c.Chars,
-			ETag: ChapterETag(meta, c),
+			ETag: ChapterETag(meta, c, svc.PurgeVariant()),
 		})
 	}
 	svc.Audit.Record(ctx, username, ip, "book_chapters", bookID, "ok", fmt.Sprintf("chapters=%d", len(out)))
@@ -307,7 +307,7 @@ func (svc *Service) ChapterPlain(w http.ResponseWriter, r *http.Request, bookID 
 		return
 	}
 	ch := chapters[index]
-	etag := ChapterETag(meta, ch)
+	etag := ChapterETag(meta, ch, svc.PurgeVariant())
 	w.Header().Set("ETag", etag)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
 	if matchETag(r.Header.Get("If-None-Match"), etag) {
@@ -316,7 +316,8 @@ func (svc *Service) ChapterPlain(w http.ResponseWriter, r *http.Request, bookID 
 		return
 	}
 	runes := []rune(string(plain))
-	text := string(runes[ch.Start:ch.End])
+	// 净化只发生在输出前：密文、明文文件、检索索引都不受影响。
+	text := svc.PurgeText(string(runes[ch.Start:ch.End]))
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

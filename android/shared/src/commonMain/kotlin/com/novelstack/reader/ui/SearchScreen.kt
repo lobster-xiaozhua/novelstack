@@ -78,7 +78,7 @@ fun SearchScreen(state: AppState) {
                 )
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(results, key = { "${it.bookId}:${it.chapterIndex}" }) { hit ->
+                    items(results, key = { "${it.bookId}:${it.chapterIndex}:${it.matchType}" }) { hit ->
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -101,9 +101,17 @@ fun SearchScreen(state: AppState) {
                             )
                             Spacer(Modifier.height(6.dp))
                             TextButton(
-                                onClick = { state.openAt(hit.bookId, hit.chapterIndex) },
+                                onClick = {
+                                    if (hit.chapterIndex < 0) state.openBook(hit.bookId)
+                                    else state.openAt(hit.bookId, hit.chapterIndex)
+                                },
                                 contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                            ) { Text("跳转到第 ${hit.chapterIndex + 1} 章") }
+                            ) {
+                                Text(
+                                    if (hit.chapterIndex < 0) "打开这本书"
+                                    else "跳转到第 ${hit.chapterIndex + 1} 章",
+                                )
+                            }
                         }
                         HorizontalDivider()
                     }

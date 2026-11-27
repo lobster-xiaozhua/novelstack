@@ -66,13 +66,15 @@ func (svc *Service) SealChapters(ctx context.Context, bookID, ownerID string, in
 	out := make([]chapterpkg.Sealed, 0, len(ordered))
 	for _, idx := range ordered {
 		ch := chapters[idx]
-		pkg, serr := chapterpkg.Seal(dek, bookID, idx, []byte(string(runes[ch.Start:ch.End])))
+		// 净化必须发生在封装之前：客户端本地缓存的就是净化后的正文。
+		text := svc.PurgeText(string(runes[ch.Start:ch.End]))
+		pkg, serr := chapterpkg.Seal(dek, bookID, idx, []byte(text))
 		if serr != nil {
 			return nil, serr
 		}
 		out = append(out, chapterpkg.Sealed{
 			Index: idx, Title: ch.Title, Package: pkg,
-			ETag: ChapterETag(meta, ch),
+			ETag: ChapterETag(meta, ch, svc.PurgeVariant()),
 		})
 	}
 	return out, nil

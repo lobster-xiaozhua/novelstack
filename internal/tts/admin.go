@@ -184,6 +184,8 @@ type PruneResult struct {
 	FreedBytes   int64 `json:"freed_bytes"`
 	Protected    int   `json:"protected"`
 	SegmentsLeft int   `json:"segments_left"`
+	// RemovedDeleted 是因所属书籍被软删除而回收的片段数（不计入策略淘汰）。
+	RemovedDeleted int `json:"removed_deleted"`
 }
 
 // PruneCache 按总大小上限与保留天数淘汰缓存。
@@ -193,8 +195,20 @@ func (s *Service) PruneCache(ctx context.Context, policy PrunePolicy) (PruneResu
 	if _, bytes, err := s.Cache.Stats(); err == nil {
 		res.BytesBefore = bytes
 	}
+	// 软删除回收优先于容量/时间淘汰：书籍已被删除，它的音频没有任何保留价值，
+	// 也不该占用磁盘等待 LRU 自然过期。即使 policy 为零值也要执行。
+	removed, freed, err := s.purgeDeletedBookSegments(ctx, policy.DryRun)
+	if err != nil {
+		return res, err
+	}
+	res.RemovedDeleted = removed
+	res.FreedBytes += freed
 	if policy.MaxBytes <= 0 && policy.KeepDays <= 0 {
-		res.BytesAfter = res.BytesBefore
+		if policy.DryRun {
+			res.BytesAfter = res.BytesBefore - freed
+		} else if _, bytes, err := s.Cache.Stats(); err == nil {
+			res.BytesAfter = bytes
+		}
 		if seg, _, err := s.Cache.Stats(); err == nil {
 			res.SegmentsLeft = seg
 		}
@@ -351,4 +365,58 @@ func (s *Service) CacheDir() string {
 func dirExists(p string) bool {
 	st, err := os.Stat(p)
 	return err == nil && st.IsDir()
+}
+
+// purgeDeletedBookSegments 回收「所属书籍已软删除」的全部音频片段。
+//
+// 这是第九阶段软删除语义的配套动作：书籍被删后其音频不再有播放入口，
+// 即使 LRU 还没轮到它，也应该立即释放磁盘。
+// 正在流式输出的片段（本进程引用计数 > 0）会被跳过，下次再清理。
+func (s *Service) purgeDeletedBookSegments(ctx context.Context, dryRun bool) (removed int, freed int64, err error) {
+	rows, err := s.Repo.db.QueryContext(ctx, `
+		SELECT t.cache_key
+		FROM tts_segments t
+		JOIN books b ON b.id = t.book_id
+		WHERE b.deleted_at IS NOT NULL`)
+	if err != nil {
+		return 0, 0, err
+	}
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			rows.Close()
+			return 0, 0, err
+		}
+		keys = append(keys, k)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, 0, err
+	}
+	if len(keys) == 0 {
+		return 0, 0, nil
+	}
+	active := s.activeKeys()
+	deleted := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if _, busy := active[k]; busy {
+			continue
+		}
+		size := s.Cache.CipherSize(k)
+		if !dryRun {
+			if err := s.Cache.Remove(k); err != nil {
+				continue
+			}
+			deleted = append(deleted, k)
+		}
+		removed++
+		freed += size
+	}
+	if !dryRun && len(deleted) > 0 {
+		if err := s.Repo.DeleteSegments(ctx, deleted); err != nil {
+			return removed, freed, err
+		}
+	}
+	return removed, freed, nil
 }

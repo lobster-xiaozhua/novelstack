@@ -356,6 +356,23 @@ CREATE TABLE IF NOT EXISTS telemetry_rollups (
 CREATE INDEX IF NOT EXISTS idx_telemetry_rollups_kind ON telemetry_rollups(kind, bucket);
 `,
 	},
+	{
+		Version: 9,
+		SQL: `
+-- 第九阶段：阅读统计。
+-- 只累计「秒数」与「章节数」，不含任何正文、书名或设备信息。
+-- day 为服务端时区（默认 Asia/Shanghai）的日历日，避免客户端时钟漂移导致跨天错乱。
+CREATE TABLE IF NOT EXISTS reading_daily (
+    owner_id   TEXT NOT NULL,
+    day        TEXT NOT NULL,
+    seconds    INTEGER NOT NULL DEFAULT 0,
+    chapters   INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (owner_id, day)
+);
+CREATE INDEX IF NOT EXISTS idx_reading_daily_owner_day ON reading_daily(owner_id, day);
+`,
+	},
 }
 
 // Open 打开（必要时创建）SQLite 数据库，启用 WAL 与 busy_timeout，并执行迁移。

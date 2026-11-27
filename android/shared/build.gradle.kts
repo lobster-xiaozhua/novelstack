@@ -61,6 +61,7 @@ kotlin {
             implementation(libs.androidx.sqlite)
             implementation(libs.androidx.core.ktx)
             implementation(libs.androidx.work.runtime)
+            implementation(libs.tinypinyin)
             implementation(libs.sqlcipher.android)
             implementation(libs.coroutines.android)
         }

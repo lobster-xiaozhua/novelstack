@@ -14,6 +14,7 @@ androidxSqlite = "2.4.0"
 androidxMedia = "1.7.0"
 coreKtx = "1.13.1"
 work = "2.9.1"
+tinypinyin = "2.0.3"
 junit = "4.13.2"
 androidxTestJunit = "1.2.1"
 
@@ -44,6 +45,7 @@ datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "d
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
+tinypinyin = { module = "com.github.promeg:tinypinyin", version.ref = "tinypinyin" }
 androidx-media = { module = "androidx.media:media", version.ref = "androidxMedia" }
 androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "androidxSqlite" }
 sqlcipher-android = { module = "net.zetetic:sqlcipher-android", version.ref = "sqlcipher" }

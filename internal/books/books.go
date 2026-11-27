@@ -17,6 +17,7 @@ import (
 	"novelstack/internal/audit"
 	"novelstack/internal/chapterscan"
 	"novelstack/internal/cryptobox"
+	"novelstack/internal/purge"
 )
 
 // Store 封装 books 表操作。
@@ -254,6 +255,25 @@ type Service struct {
 	// OldKEKs 保存旧版本 KEK（只读），用于轮换窗口期读取尚未重包装的记录。
 	// 键为版本号；不得包含当前版本（当前版本以 KEK 字段为准）。
 	OldKEKs map[int][]byte
+	// Purge 是正文明文净化引擎（可为 nil，表示不净化）。
+	// 只在「解密之后、输出之前」调用，绝不参与存储。
+	Purge *purge.Engine
+}
+
+// PurgeVariant 返回参与 ETag 计算的净化规则指纹。
+func (svc *Service) PurgeVariant() string {
+	if svc.Purge == nil {
+		return "none"
+	}
+	return svc.Purge.Fingerprint()
+}
+
+// PurgeText 对输出文本应用净化规则；引擎为 nil 时原样返回。
+func (svc *Service) PurgeText(s string) string {
+	if svc.Purge == nil {
+		return s
+	}
+	return svc.Purge.Apply(s)
 }
 
 // currentKEKVersion 返回写入使用的版本（缺省为 1）。

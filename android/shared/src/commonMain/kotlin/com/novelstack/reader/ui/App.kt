@@ -3,7 +3,9 @@ package com.novelstack.reader.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -41,14 +43,19 @@ fun NovelApp(state: AppState) {
 @Composable
 private fun MainTabs(state: AppState, current: Screen) {
     val network by state.network.collectAsState()
+    val offline by state.offline.collectAsState()
     Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
         NetworkBanner(network)
+        if (offline && network != NetworkStatus.Offline) {
+            OfflineBanner(onRetry = { state.retryConnection() })
+        }
         Box(modifier = Modifier.weight(1f)) {
             when (current) {
                 Screen.Library -> LibraryScreen(state)
                 Screen.Discover -> DiscoverScreen(state)
                 Screen.History -> HistoryScreen(state)
                 Screen.Settings -> SettingsScreen(state)
+                Screen.Stats -> StatsScreen(state)
                 else -> LibraryScreen(state)
             }
         }
@@ -68,6 +75,36 @@ private fun MainTabs(state: AppState, current: Screen) {
                 )
             }
         }
+    }
+}
+
+/**
+ * 离线熔断横幅：连续 3 次 API 超时后出现。
+ * 与「系统断网」不同——这里网卡是通的，只是服务端不可达（或极慢）。
+ */
+@Composable
+private fun OfflineBanner(onRetry: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+    ) {
+        Text(
+            "服务器连接失败，已进入离线模式",
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            "重试",
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .clickable(onClick = onRetry),
+        )
     }
 }
 

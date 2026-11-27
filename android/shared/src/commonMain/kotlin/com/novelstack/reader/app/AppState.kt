@@ -13,6 +13,8 @@ import com.novelstack.reader.model.DiscoverResponse
 import com.novelstack.reader.model.HistoryItem
 import com.novelstack.reader.model.LoginRequest
 import com.novelstack.reader.model.ProgressRequest
+import com.novelstack.reader.model.ReadingStats
+import com.novelstack.reader.net.NetworkCircuit
 import com.novelstack.reader.net.NovelApi
 import com.novelstack.reader.platform.AudioSinkFactory
 import com.novelstack.reader.platform.DeviceKeyStore
@@ -40,6 +42,7 @@ sealed interface Screen {
     data object History : Screen
     data object Search : Screen
     data object Settings : Screen
+    data object Stats : Screen
     data class Reader(val bookId: String) : Screen
 }
 
@@ -67,6 +70,19 @@ data class UpdateUiState(
     val progress: Float = 0f,
     val message: String? = null,
     val readyToInstall: String? = null,
+)
+
+/**
+ * 离线进度提示。
+ *
+ * 触发条件：本机有「未同步」的阅读进度，且服务端记录的章节比本地更靠前（章节索引更小）。
+ * 说明用户在离线期间读得更远，需要问一句要不要跳过去，而不是默默覆盖。
+ */
+data class OfflineProgressPrompt(
+    val bookId: String,
+    val localChapter: Int,
+    val remoteChapter: Int,
+    val totalChapters: Int,
 )
 
 data class ReaderUiState(
@@ -129,12 +145,43 @@ class AppState(
     // ---- 第九阶段：网络状态与遥测 ----
     /** 供顶部横幅与预读开关使用；由平台 NetworkCallback 驱动。 */
     val network = MutableStateFlow(NetworkStatus.Online)
+
+    // ---- 第九阶段（本期）：离线熔断、拼音、阅读统计 ----
+    /** 连续 3 次 API 超时后为 true；由网络拦截器驱动。 */
+    val offline = NetworkCircuit.offline
+    /** 有本地缓存的书籍 id：离线模式下书架只展示这些。 */
+    val cachedIds = MutableStateFlow<Set<String>>(emptySet())
+    /** 阅读统计（进入统计页时刷新）。 */
+    val readingStats = MutableStateFlow<ReadingStats?>(null)
+    /** 离线进度提示：本地进度比云端更靠后时弹出，等用户决定。 */
+    val offlinePrompt = MutableStateFlow<OfflineProgressPrompt?>(null)
     val telemetryStats = MutableStateFlow<com.novelstack.reader.telemetry.TelemetryStats?>(null)
 
     /** 只有不计量网络才允许预读/批量同步，避免偷跑流量。 */
     val canPrefetch: Boolean get() = network.value == NetworkStatus.Online
 
     private var progressJob: Job? = null
+
+    /** 上次计入阅读时长的时间点（毫秒）；0 表示尚未开始计时。 */
+    private var lastActivityAt: Long = 0L
+    /** 已累计但尚未上报的阅读秒数。 */
+    private var pendingReadSeconds: Int = 0
+
+    /**
+     * 取出累计的阅读秒数并清零。
+     * 上报失败时这部分会丢——阅读统计属于非关键数据，不值得为它加重试队列。
+     */
+    private fun drainReadingSeconds(): Int {
+        val now = Clock.System.now().toEpochMilliseconds()
+        if (lastActivityAt > 0L) {
+            val delta = ((now - lastActivityAt) / 1000L).toInt().coerceIn(0, 120)
+            pendingReadSeconds = (pendingReadSeconds + delta).coerceAtMost(600)
+        }
+        lastActivityAt = now
+        val out = pendingReadSeconds
+        pendingReadSeconds = 0
+        return out
+    }
 
     /**
      * 播放启动钩子：由平台层（Android MainActivity）设置，用于在开始朗读前
@@ -169,7 +216,10 @@ class AppState(
                 return p.takeIf { it in 0 until reader.value.chapters.size }
             }
         })
-        scope.launch { bootstrap() }
+        scope.launch {
+            bootstrap()
+            refreshCachedIds()
+        }
     }
 
     private fun loadSettings(): ReaderSettings = runCatching {
@@ -301,6 +351,7 @@ class AppState(
         store.kvPut("cursor", m.cursor.toString())
         books.value = store.listBooks()
         lastSyncAt.value = Clock.System.now().toEpochMilliseconds()
+        refreshCachedIds()
         flushProgress()
     }
 
@@ -337,7 +388,34 @@ class AppState(
         )
         screen.value = Screen.Reader(bookId)
         scope.launch { loadChapter(bookId, idx, report = false) }
-        if (saved == null) restoreRemoteProgress(bookId)
+        if (saved == null) {
+            restoreRemoteProgress(bookId)
+        } else if (saved.synced_at < saved.updated_at) {
+            detectOfflineProgress(bookId, idx, meta.size)
+        }
+        // 打开阅读页即开始计时，避免把「呆在书架上的时间」算成阅读时长。
+        lastActivityAt = Clock.System.now().toEpochMilliseconds()
+    }
+
+    /**
+     * 本地有未同步进度时，向服务端确认一次：如果云端停得更靠前，
+     * 说明用户在离线期间读得更远，弹窗让用户自己决定跳到哪里。
+     *
+     * 离线模式下不发请求（避免每次都等超时），等恢复在线后再判断。
+     */
+    private fun detectOfflineProgress(bookId: String, localChapter: Int, total: Int) {
+        if (offline.value || localChapter <= 0) return
+        scope.launch {
+            val remote = runCatching { api.getProgress(bookId) }.getOrNull() ?: return@launch
+            if (remote.chapterIndex >= localChapter) return@launch
+            if ((screen.value as? Screen.Reader)?.bookId != bookId) return@launch
+            offlinePrompt.value = OfflineProgressPrompt(
+                bookId = bookId,
+                localChapter = localChapter,
+                remoteChapter = remote.chapterIndex,
+                totalChapters = total,
+            )
+        }
     }
 
     /**
@@ -448,6 +526,7 @@ class AppState(
             val started = Telemetry.now()
             try {
                 prefetchInternal(bookId, need)
+                refreshCachedIds()
                 notice.value = "已缓存 ${need.size} 章（密文传输，本地解密）"
                 Telemetry.record(
                     kind = TelemetryKind.PRELOAD_STATS,
@@ -492,6 +571,8 @@ class AppState(
 
     fun reportProgress(bookId: String, chapterIndex: Int, charOffset: Int, percent: Float) {
         store.saveProgress(bookId, chapterIndex, charOffset, percent)
+        // 阅读时长：按「两次上报之间的活跃时长」估算，单次封顶 120 秒（防长时间挂后台失真）。
+        val readSeconds = drainReadingSeconds()
         progressJob?.cancel()
         progressJob = scope.launch {
             delay(800) // 防抖：快速翻页只上报最后一次
@@ -503,6 +584,7 @@ class AppState(
                         charOffset = charOffset,
                         percent = percent.toDouble().coerceIn(0.0, 1.0),
                         deviceId = store.kvGet("device_id") ?: "",
+                        readSeconds = readSeconds,
                     ),
                 )
                 store.markProgressSynced(bookId)
@@ -737,6 +819,53 @@ class AppState(
         notice.value = "已加入上传队列"
     }
 
+    // ---- 第九阶段（本期）：离线模式 ----
+
+    /**
+     * 离线模式下的书架数据源。
+     * 在线时原样返回；离线时只保留「至少有一章缓存」的书，避免点进去一片空白。
+     */
+    fun visibleBooks(all: List<Books>): List<Books> =
+        if (!offline.value) all else all.filter { it.id in cachedIds.value }
+
+    /** 手动重试：清空熔断计数并同步一次，让横幅能自己消失。 */
+    fun retryConnection() {
+        NetworkCircuit.reset()
+        notice.value = "正在重试连接…"
+        sync()
+    }
+
+    /** 刷新本地缓存书籍集合（同步/预读/删书后调用）。 */
+    fun refreshCachedIds() {
+        cachedIds.value = runCatching { store.cachedBookIds() }.getOrDefault(emptySet())
+    }
+
+    /** 加载阅读统计；失败时静默（统计不是主流程）。 */
+    fun loadReadingStats() {
+        scope.launch {
+            runCatching { api.readingStats() }
+                .onSuccess { readingStats.value = it }
+                .onFailure { if (!offline.value) error.value = friendly(it) }
+        }
+    }
+
+    /** 用户选择「跳到离线进度」或「留在云端进度」。 */
+    fun resolveOfflinePrompt(useLocal: Boolean) {
+        val p = offlinePrompt.value ?: return
+        offlinePrompt.value = null
+        if (!useLocal) {
+            // 放弃本地进度：把本地记录回退到云端位置，避免下次又提示。
+            store.saveProgress(p.bookId, p.remoteChapter, 0, percentOf(reader.value.chapters.size, p.remoteChapter))
+            scope.launch { loadChapter(p.bookId, p.remoteChapter, report = false) }
+            return
+        }
+        notice.value = "已回到离线进度：第 ${p.localChapter + 1} 章"
+        scope.launch {
+            prefetchInternal(p.bookId, listOf(p.localChapter))
+            loadChapter(p.bookId, p.localChapter, report = false)
+        }
+    }
+
     // ---- 系统保活 ----
 
     fun keepAliveInfo(): KeepAliveInfo? = keepAlive?.let {
@@ -775,6 +904,10 @@ class AppState(
             history.value = emptyList()
             favoritesOnly.value = false
             update.value = UpdateUiState()
+            readingStats.value = null
+            cachedIds.value = emptySet()
+            offlinePrompt.value = null
+            NetworkCircuit.clear()
             serverUrl.value = ""
             deviceId.value = ""
             lastSyncAt.value = 0
@@ -807,7 +940,11 @@ class AppState(
             e.unauthorized -> "凭证无效或已被撤销"
             else -> "${e.message}（HTTP ${e.status}）"
         }
-        else -> e.message ?: "未知错误"
+        else -> if (offline.value) {
+            "网络不稳定，已进入离线模式：只显示已缓存内容"
+        } else {
+            e.message ?: "未知错误"
+        }
     }
 
     companion object {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -41,6 +42,14 @@ type Service struct {
 	// ProtectWindow 是缓存淘汰的保护窗口：窗口内访问过的片段不删（默认 5 分钟）。
 	ProtectWindow time.Duration
 
+	// ---- 第九阶段：旁白 / 对话双音色 ----
+	// DialogueVoice 为对话音色；为空表示不启用（全部片段用请求里的 voice）。
+	DialogueVoice string
+	// DialoguePattern 识别对话段落；必须含捕获组（组 1 为对话正文）。
+	DialoguePattern string
+	dialogueRe      *regexp.Regexp
+	dialogueOnce    sync.Once
+
 	refMu sync.Mutex
 	// refs 记录本进程正在流式输出的片段引用计数，清理时跳过。
 	refs map[string]int
@@ -55,6 +64,8 @@ type seg struct {
 	index int
 	text  string
 	key   string
+	// voice 是该片段使用的音色：旁白与对话可能不同。
+	voice string
 }
 
 // Speak 处理 GET /api/books/{id}/chapters/{idx}/speak。
@@ -68,7 +79,7 @@ func (s *Service) Speak(w http.ResponseWriter, r *http.Request, bookID string, c
 		writeErr(w, http.StatusServiceUnavailable, "tts not configured")
 		return
 	}
-	voice, speed, ok := s.readVoiceSpeed(w, r)
+	voice, dialogueVoice, speed, ok := s.readVoices(w, r)
 	if !ok {
 		return
 	}
@@ -87,9 +98,10 @@ func (s *Service) Speak(w http.ResponseWriter, r *http.Request, bookID string, c
 	}
 	ch := chapters[chapterIndex]
 	runes := []rune(string(plain))
-	chapterText := string(runes[ch.Start:ch.End])
+	// 朗读同样使用净化后的文本：广告句不该被念出来。
+	chapterText := s.Books.PurgeText(string(runes[ch.Start:ch.End]))
 
-	segs := s.buildSegments(chapterText, voice, speed)
+	segs := s.buildSegments(chapterText, voice, dialogueVoice, speed)
 	if len(segs) == 0 {
 		writeErr(w, http.StatusUnprocessableEntity, "chapter has no speakable text")
 		return
@@ -175,7 +187,7 @@ func (s *Service) Speak(w http.ResponseWriter, r *http.Request, bookID string, c
 			break
 		}
 
-		audio, err := s.synthesize(ctx, sg, voice, speed)
+		audio, err := s.synthesize(ctx, sg, speed)
 		if err != nil {
 			failedAt, failClass = sg.index, classifyErr(err)
 			sw.failSegment(sg.index, "synthesis_failed")
@@ -193,7 +205,7 @@ func (s *Service) Speak(w http.ResponseWriter, r *http.Request, bookID string, c
 				ChapterIndex: chapterIndex,
 				SegmentIndex: sg.index,
 				Provider:     s.Provider.Name(),
-				Voice:        voice,
+				Voice:        sg.voice,
 				Speed:        speed,
 				Format:       FormatWAV,
 				PlainBytes:   int64(len(audio)),
@@ -223,24 +235,62 @@ func (s *Service) Speak(w http.ResponseWriter, r *http.Request, bookID string, c
 }
 
 // buildSegments 切分章节并计算片段指纹（跳过纯空白片段）。
-func (s *Service) buildSegments(chapterText, voice string, speed float64) []seg {
-	parts := Segment(chapterText, s.MaxSegmentRunes)
-	out := make([]seg, 0, len(parts))
-	for i, p := range parts {
-		if IsSilent(p) {
+//
+// 双音色：先按 DialoguePattern 把文本切成「旁白/对话」交替的段落，
+// 再对每段做等长切分。对话段用 dialogueVoice，其余用 voice。
+// 缓存键包含实际音色，因此同一句话在两种音色下不会互相覆盖。
+func (s *Service) buildSegments(chapterText, voice, dialogueVoice string, speed float64) []seg {
+	spans := SplitDialogue(chapterText, s.dialogueRegexp())
+	out := make([]seg, 0, len(spans))
+	index := 0
+	for _, sp := range spans {
+		if isSilentSpan(sp.Text) {
 			continue
 		}
-		out = append(out, seg{
-			index: i,
-			text:  p,
-			key:   CacheKey(s.Provider.Name(), voice, speed, FormatWAV, p),
-		})
+		segVoice := voice
+		if sp.Dialogue && dialogueVoice != "" {
+			segVoice = dialogueVoice
+		}
+		for _, p := range Segment(sp.Text, s.MaxSegmentRunes) {
+			if IsSilent(p) {
+				index++
+				continue
+			}
+			out = append(out, seg{
+				index: index,
+				text:  p,
+				voice: segVoice,
+				key:   CacheKey(s.Provider.Name(), segVoice, speed, FormatWAV, p),
+			})
+			index++
+		}
 	}
 	return out
 }
 
+// dialogueRegexp 惰性编译对话识别正则（配置错误时不阻断朗读，只降级为单音色）。
+func (s *Service) dialogueRegexp() *regexp.Regexp {
+	if s.DialogueVoice == "" {
+		return nil
+	}
+	s.dialogueOnce.Do(func() {
+		pattern := s.DialoguePattern
+		if pattern == "" {
+			pattern = `[“"「『]([^”"」』\n]{1,400})[”"」』]`
+		}
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			// 配置错误不阻断朗读：降级为单音色，并留下一次性日志。
+			log.Printf("tts: TTS_DIALOGUE_PATTERN 无效，已降级为单音色: %v", err)
+			return
+		}
+		s.dialogueRe = re
+	})
+	return s.dialogueRe
+}
+
 // synthesize 单片段合成：独立超时、记录耗时与错误类别（不记录文本）。
-func (s *Service) synthesize(ctx context.Context, sg seg, voice string, speed float64) ([]byte, error) {
+func (s *Service) synthesize(ctx context.Context, sg seg, speed float64) ([]byte, error) {
 	timeout := s.SegmentTimeout
 	if timeout <= 0 {
 		timeout = 20 * time.Second
@@ -248,7 +298,7 @@ func (s *Service) synthesize(ctx context.Context, sg seg, voice string, speed fl
 	sctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	start := time.Now()
-	audio, err := s.Provider.Synthesize(sctx, NormalizeText(sg.text), voice, speed)
+	audio, err := s.Provider.Synthesize(sctx, NormalizeText(sg.text), sg.voice, speed)
 	dur := time.Since(start)
 	class := classifyErr(err)
 	result := "ok"
@@ -270,17 +320,28 @@ func (s *Service) synthesize(ctx context.Context, sg seg, voice string, speed fl
 	return audio, nil
 }
 
-// readVoiceSpeed 解析并校验 voice/speed；不合法时已写出 400。
-func (s *Service) readVoiceSpeed(w http.ResponseWriter, r *http.Request) (string, float64, bool) {
-	voice := r.URL.Query().Get("voice")
-	if voice == "" {
-		voice = s.DefaultVoice
+// readVoices 解析并校验 voice / dialogue_voice / speed；不合法时已写出 400。
+//
+// narration 来自 ?voice=（缺省用 TTS_VOICE）；
+// dialogue 来自 ?dialogue_voice=（缺省用 TTS_DIALOGUE_VOICE），为空表示单音色。
+func (s *Service) readVoices(w http.ResponseWriter, r *http.Request) (narration, dialogue string, speed float64, ok bool) {
+	narration = r.URL.Query().Get("voice")
+	if narration == "" {
+		narration = s.DefaultVoice
 	}
-	if voice != "" && !voicePattern.MatchString(voice) {
+	if narration != "" && !voicePattern.MatchString(narration) {
 		writeErr(w, http.StatusBadRequest, "invalid voice")
-		return "", 0, false
+		return "", "", 0, false
 	}
-	speed := s.DefaultSpeed
+	dialogue = r.URL.Query().Get("dialogue_voice")
+	if dialogue == "" {
+		dialogue = s.DialogueVoice
+	}
+	if dialogue != "" && !voicePattern.MatchString(dialogue) {
+		writeErr(w, http.StatusBadRequest, "invalid dialogue_voice")
+		return "", "", 0, false
+	}
+	speed = s.DefaultSpeed
 	if speed <= 0 {
 		speed = 1.0
 	}
@@ -288,11 +349,11 @@ func (s *Service) readVoiceSpeed(w http.ResponseWriter, r *http.Request) (string
 		f, err := strconv.ParseFloat(v, 64)
 		if err != nil || f < 0.5 || f > 2.0 {
 			writeErr(w, http.StatusBadRequest, "invalid speed (0.5-2.0)")
-			return "", 0, false
+			return "", "", 0, false
 		}
 		speed = f
 	}
-	return voice, speed, true
+	return narration, dialogue, speed, true
 }
 
 func (s *Service) auditBookErr(ctx context.Context, action, bookID, username, ip string, err error) {

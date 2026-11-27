@@ -60,6 +60,14 @@ type WrapFunc func(bookID string) (string, error)
 // 游标是 books.sync_seq（单调递增整数），由上传/删除/元数据修改推进，
 // 不依赖客户端时钟，也不会因为同一毫秒内多次写入而丢变更。
 func BuildManifest(ctx context.Context, db *sql.DB, ownerID string, since int64, wrap WrapFunc) (*Manifest, error) {
+	return BuildManifestWithVariant(ctx, db, ownerID, since, wrap, "none")
+}
+
+// BuildManifestWithVariant 与 BuildManifest 相同，但把净化规则指纹混进章节 ETag：
+// 运维改了 REGEX_PURGE_RULES 后，客户端必须重新拉取章节，否则会继续用旧缓存。
+func BuildManifestWithVariant(
+	ctx context.Context, db *sql.DB, ownerID string, since int64, wrap WrapFunc, etagVariant string,
+) (*Manifest, error) {
 	if since < 0 {
 		since = 0
 	}
@@ -117,7 +125,7 @@ func BuildManifest(ctx context.Context, db *sql.DB, ownerID string, since int64,
 			}
 			continue
 		}
-		if err := fillChapters(ctx, db, &r.b); err != nil {
+		if err := fillChapters(ctx, db, &r.b, etagVariant); err != nil {
 			return nil, err
 		}
 		if wrap != nil {
@@ -135,7 +143,7 @@ func BuildManifest(ctx context.Context, db *sql.DB, ownerID string, since int64,
 
 // fillChapters 追加章节目录与 ETag。
 // 每本书一次查询（N+1）：私人书库规模下可接受，换来实现简单与索引命中。
-func fillChapters(ctx context.Context, db *sql.DB, b *BookChange) error {
+func fillChapters(ctx context.Context, db *sql.DB, b *BookChange, etagVariant string) error {
 	rows, err := db.QueryContext(ctx, `SELECT chapter_index, title, chars, start_rune, end_rune
 		FROM book_chapters WHERE book_id = ? ORDER BY chapter_index`, b.ID)
 	if err != nil {
@@ -151,7 +159,7 @@ func fillChapters(ctx context.Context, db *sql.DB, b *BookChange) error {
 		}
 		b.Chapters = append(b.Chapters, ChapterRef{
 			Index: c.Index, Title: c.Title, Chars: c.Chars,
-			ETag: books.ChapterETag(meta, c),
+			ETag: books.ChapterETag(meta, c, etagVariant),
 		})
 	}
 	return rows.Err()

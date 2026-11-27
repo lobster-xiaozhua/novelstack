@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
+import com.novelstack.reader.app.Screen
 import com.novelstack.reader.app.KeepAliveInfo
 import kotlinx.datetime.Clock
 
@@ -48,6 +49,7 @@ fun SettingsScreen(state: AppState) {
     val update by state.update.collectAsState()
     val telemetry by state.telemetryStats.collectAsState()
     var keepAlive by remember { mutableStateOf<KeepAliveInfo?>(null) }
+    val offline by state.offline.collectAsState()
     var confirmWipe by remember { mutableStateOf(false) }
     var showUpdate by remember { mutableStateOf(false) }
 
@@ -101,6 +103,28 @@ fun SettingsScreen(state: AppState) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("阅读统计", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "今日/累计时长、连续阅读天数、30 天柱状图与 90 天日历热力图。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    state.loadReadingStats()
+                    state.screen.value = Screen.Stats
+                }) { Text("查看阅读统计") }
+                if (offline) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "离线模式：显示上次同步的数据",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
 
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
             Text("应用更新", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)

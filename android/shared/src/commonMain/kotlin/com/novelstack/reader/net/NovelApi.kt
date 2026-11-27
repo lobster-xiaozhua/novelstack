@@ -17,6 +17,7 @@ import com.novelstack.reader.model.PrepareResponse
 import com.novelstack.reader.model.ProgressDto
 import com.novelstack.reader.model.ProgressRequest
 import com.novelstack.reader.model.ProgressResponse
+import com.novelstack.reader.model.ReadingStats
 import com.novelstack.reader.model.SyncManifest
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
@@ -120,6 +121,12 @@ class NovelApi(
         }
         val r = json.decodeFromString(FavoriteResponse.serializer(), resp.textOrThrow())
         return r.isFavorite
+    }
+
+    /** 阅读统计（今日/累计/连续天数/近 90 天）。 */
+    suspend fun readingStats(): ReadingStats {
+        val resp = client.get("$baseUrl/api/stats/reading") { auth() }
+        return json.decodeFromString(ReadingStats.serializer(), resp.textOrThrow())
     }
 
     suspend fun appVersion(): AppVersion {

@@ -49,8 +49,11 @@ fun LibraryScreen(state: AppState) {
     val busy by state.busy.collectAsState()
     val notice by state.notice.collectAsState()
     val error by state.error.collectAsState()
+    val offline by state.offline.collectAsState()
 
-    val shown = if (favOnly) books.filter { it.is_favorite != 0L } else books
+    // 离线模式只展示「至少有一章缓存」的书，避免点进去一片空白。
+    val available = state.visibleBooks(books)
+    val shown = if (favOnly) available.filter { it.is_favorite != 0L } else available
 
     Scaffold(
         topBar = {
@@ -93,12 +96,12 @@ fun LibraryScreen(state: AppState) {
                 FilterChip(
                     selected = !favOnly,
                     onClick = { state.favoritesOnly.value = false },
-                    label = { Text("全部 ${books.size}") },
+                    label = { Text("全部 ${available.size}") },
                 )
                 FilterChip(
                     selected = favOnly,
                     onClick = { state.favoritesOnly.value = true },
-                    label = { Text("收藏 ${books.count { it.is_favorite != 0L }}") },
+                    label = { Text("收藏 ${available.count { it.is_favorite != 0L }}") },
                 )
             }
 
@@ -109,12 +112,15 @@ fun LibraryScreen(state: AppState) {
                             CircularProgressIndicator()
                         } else {
                             Text(
-                                if (favOnly) "还没有收藏的书" else "书库为空",
+                                if (favOnly) "还没有收藏的书"
+                                else if (offline) "离线模式下没有可读的书"
+                                else "书库为空",
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
                                 if (favOnly) "在阅读页点右上角 ♥ 即可收藏"
+                                else if (offline) "恢复网络后同步，或先在在线状态下缓存章节"
                                 else "先在控制台上传书籍，然后点右上角「同步」",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,

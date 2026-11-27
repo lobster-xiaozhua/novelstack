@@ -27,8 +27,10 @@ import (
 	"novelstack/internal/devices"
 	"novelstack/internal/legado"
 	"novelstack/internal/ops"
+	"novelstack/internal/purge"
 	"novelstack/internal/search"
 	"novelstack/internal/server"
+	"novelstack/internal/stats"
 	"novelstack/internal/telemetry"
 	"novelstack/internal/tts"
 	"novelstack/internal/ttscache"
@@ -60,6 +62,10 @@ type App struct {
 	// Telemetry 是遥测明细/聚合存储；TelemetrySched 负责小时聚合与 90 天清理。
 	Telemetry      *telemetry.Store
 	TelemetrySched *telemetry.Scheduler
+	// Stats 是阅读统计（今日/累计/连续天数）。
+	Stats *stats.Service
+
+	ttsReclaimStop chan struct{}
 }
 
 // New 构建完整应用；任何关键步骤失败都返回 error（由调用方决定退出）。
@@ -92,6 +98,15 @@ func New(ctx context.Context, opts Options) (*App, error) {
 	}
 
 	a := audit.New(database)
+	// ---- 正文明文净化（第九阶段）----
+	// 规则非法即启动失败：宁可起不来，也不要带着错误规则对外输出未净化文本。
+	purgeEngine, err := purge.New(cfg.PurgeRules)
+	if err != nil {
+		return cleanup(fmt.Errorf("REGEX_PURGE_RULES: %w", err))
+	}
+	if purgeEngine.Count() > 0 {
+		log.Printf("purge: 已启用 %d 条正文净化规则", purgeEngine.Count())
+	}
 	bookSvc := &books.Service{
 		Store:         books.NewStore(database),
 		KEK:           currentKEK,
@@ -101,6 +116,7 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		ChunkSize:     cfg.ChunkSize,
 		MaxUpload:     cfg.MaxUploadBytes,
 		Audit:         a,
+		Purge:         purgeEngine,
 	}
 
 	// ---- TTS ----
@@ -149,6 +165,8 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		SegmentTimeout:        cfg.TTSSegmentTimeout,
 		MaxSegmentsPerRequest: 1000,
 		ProtectWindow:         cfg.CacheProtectWindow,
+		DialogueVoice:         cfg.TTSDialogueVoice,
+		DialoguePattern:       cfg.TTSDialoguePattern,
 	}
 
 	// ---- 元数据检索（只索引元数据）----
@@ -207,16 +225,21 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		Retention: 90 * 24 * time.Hour,
 	})
 
+	// 阅读统计：时区在 config 阶段已校验，这里可安全加载。
+	readingLoc, _ := time.LoadLocation(cfg.ReadingTZ)
+	statsSvc := stats.New(database, readingLoc)
+
 	srv := server.New(server.Deps{
 		Config: cfg, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, DB: database,
 		Devices: devSvc, Health: health, Scheduler: sched, Telemetry: telStore,
+		Stats: statsSvc,
 	})
 	return &App{
 		Cfg: cfg, DB: database, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, Devices: devSvc,
 		Scheduler: sched, Health: health, Server: srv,
-		Telemetry: telStore, TelemetrySched: telSched,
+		Telemetry: telStore, TelemetrySched: telSched, Stats: statsSvc,
 	}, nil
 }
 
@@ -258,6 +281,46 @@ func (a *App) StartBackground() {
 	if a.TelemetrySched != nil {
 		a.TelemetrySched.Start()
 	}
+	a.startTTSCacheReclaim()
+}
+
+// startTTSCacheReclaim 每 6 小时回收一次「所属书籍已软删除」的音频缓存。
+//
+// 零策略调用 PruneCache：只做软删除回收，不按容量/时间淘汰，
+// 因此不会打扰正常在读书籍的缓存。
+func (a *App) startTTSCacheReclaim() {
+	if a.TTS == nil {
+		return
+	}
+	a.ttsReclaimStop = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		// 启动后先跑一次：容器重启后能立刻释放已删除书籍占用的空间。
+		a.reclaimTTSOnce()
+		for {
+			select {
+			case <-ticker.C:
+				a.reclaimTTSOnce()
+			case <-a.ttsReclaimStop:
+				return
+			}
+		}
+	}()
+}
+
+func (a *App) reclaimTTSOnce() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	res, err := a.TTS.PruneCache(ctx, tts.PrunePolicy{})
+	if err != nil {
+		log.Printf("tts cache reclaim: %v", err)
+		return
+	}
+	if res.RemovedDeleted > 0 {
+		log.Printf("tts cache reclaim: removed %d segments (%d bytes) of deleted books",
+			res.RemovedDeleted, res.FreedBytes)
+	}
 }
 
 // Handler 返回 HTTP 根 handler。
@@ -270,6 +333,10 @@ func (a *App) Close() {
 	}
 	if a.TelemetrySched != nil {
 		a.TelemetrySched.Close()
+	}
+	if a.ttsReclaimStop != nil {
+		close(a.ttsReclaimStop)
+		a.ttsReclaimStop = nil
 	}
 	if a.Search != nil {
 		a.Search.Close()

@@ -22,6 +22,7 @@ import (
 	"novelstack/internal/mobile"
 	"novelstack/internal/ops"
 	"novelstack/internal/search"
+	"novelstack/internal/stats"
 	"novelstack/internal/telemetry"
 	"novelstack/internal/tts"
 )
@@ -46,6 +47,8 @@ type Deps struct {
 	}
 	// Telemetry 是遥测明细/聚合的查询与写入入口；为 nil 时相关接口返回 503。
 	Telemetry *telemetry.Store
+	// Stats 提供阅读统计（今日/累计/连续天数）；为 nil 时接口返回 503。
+	Stats *stats.Service
 }
 
 // Server 持有全部依赖并暴露 http.Handler。
@@ -64,6 +67,7 @@ type Server struct {
 	audioGen  *mobile.Limiter
 	health    *ops.HealthStore
 	telemetry *telemetry.Store
+	stats     *stats.Service
 	scheduler interface {
 		RunOnce(ctx context.Context) (*backup.CreateResult, error)
 	}
@@ -87,6 +91,7 @@ func New(d Deps) *Server {
 		audioGen:  mobile.NewLimiter(max(2, prefetchPerMinute(d.Config)/4), 0),
 		health:    d.Health,
 		telemetry: d.Telemetry,
+		stats:     d.Stats,
 		scheduler: d.Scheduler,
 		mux:       http.NewServeMux(),
 	}
@@ -128,6 +133,10 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/books/{id}/favorite", s.requireAuth(s.handleFavoritePatch))
 	s.mux.HandleFunc("GET /api/app/version", s.requireAuth(s.handleAppVersion))
 	s.mux.HandleFunc("GET /api/app/version/latest-hash", s.requireAuth(s.handleAppLatestHash))
+	s.mux.HandleFunc("GET /api/stats/reading", s.requireAuth(s.handleReadingStats))
+	// 数据导出：管理员会话 + 密码二次验证（防设备被盗后一键拖库）。
+	s.mux.HandleFunc("POST /api/admin/export", s.requireSession(s.handleExport))
+	s.mux.HandleFunc("POST /api/admin/export/preview", s.requireSession(s.handleExportPreview))
 
 	// 第九阶段：全链路遥测（客户端 device token 上报；控制台只读聚合与明细）。
 	s.mux.HandleFunc("POST /api/telemetry/batch", s.requireAuth(s.handleTelemetryBatch))

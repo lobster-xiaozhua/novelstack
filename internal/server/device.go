@@ -231,7 +231,7 @@ func (s *Server) handleSyncManifest(w http.ResponseWriter, r *http.Request, id i
 			})
 		}
 	}
-	m, err := mobile.BuildManifest(r.Context(), s.db, id.username, since, wrap)
+	m, err := mobile.BuildManifestWithVariant(r.Context(), s.db, id.username, since, wrap, s.books.PurgeVariant())
 	if err != nil {
 		if errors.Is(err, books.ErrKeyVersion) {
 			writeErr(w, http.StatusServiceUnavailable, "kek version not available")
@@ -256,6 +256,10 @@ func (s *Server) handleProgressPut(w http.ResponseWriter, r *http.Request, id id
 		CharOffset   int     `json:"char_offset"`
 		Percent      float64 `json:"percent"`
 		DeviceID     string  `json:"device_id"`
+		// ReadSeconds 是本次上报间隔内的真实阅读秒数（服务端只做上限截断）。
+		// 注意：请求体里即使带 updated_at / 客户端时间戳也一律被忽略，
+		// 更新时间只取服务器 UTC 时间，避免设备时钟漂移把新进度写成旧进度。
+		ReadSeconds int `json:"read_seconds"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid json body")
@@ -284,8 +288,12 @@ func (s *Server) handleProgressPut(w http.ResponseWriter, r *http.Request, id id
 		}
 		return
 	}
+	if s.stats != nil {
+		// 统计失败不影响进度写入：阅读时长是附属信息。
+		_ = s.stats.AddDaily(r.Context(), id.username, req.ReadSeconds, 0)
+	}
 	s.audit.Record(r.Context(), id.username, id.ip, "progress_updated", p.BookID, "ok",
-		fmt.Sprintf("chapter=%d offset=%d percent=%.3f", p.ChapterIndex, p.CharOffset, p.Percent))
+		fmt.Sprintf("chapter=%d offset=%d percent=%.3f read=%ds", p.ChapterIndex, p.CharOffset, p.Percent, req.ReadSeconds))
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "progress": p})
 }
 

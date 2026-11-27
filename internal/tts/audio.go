@@ -53,7 +53,8 @@ func (s *Service) PrepareAudio(ctx context.Context, bookID string, chapterIndex 
 	}
 	ch := chapters[chapterIndex]
 	runes := []rune(string(plain))
-	segs := s.buildSegments(string(runes[ch.Start:ch.End]), voice, speed)
+	chapterText := s.Books.PurgeText(string(runes[ch.Start:ch.End]))
+	segs := s.buildSegments(chapterText, voice, s.DialogueVoice, speed)
 	if len(segs) == 0 {
 		return 0, errors.New("chapter has no speakable text")
 	}
@@ -73,7 +74,7 @@ func (s *Service) PrepareAudio(ctx context.Context, bookID string, chapterIndex 
 		} else if !errors.Is(err, ttscache.ErrNotFound) {
 			return 0, fmt.Errorf("cache verify: %w", err)
 		}
-		audio, serr := s.synthesize(ctx, sg, voice, speed)
+		audio, serr := s.synthesize(ctx, sg, speed)
 		if serr != nil {
 			return 0, serr
 		}
@@ -83,7 +84,7 @@ func (s *Service) PrepareAudio(ctx context.Context, bookID string, chapterIndex 
 		made++
 		if err := s.Repo.UpsertSegment(ctx, SegmentRecord{
 			CacheKey: sg.key, BookID: bookID, ChapterIndex: chapterIndex, SegmentIndex: sg.index,
-			Provider: s.Provider.Name(), Voice: voice, Speed: speed, Format: FormatWAV,
+			Provider: s.Provider.Name(), Voice: sg.voice, Speed: speed, Format: FormatWAV,
 			PlainBytes: int64(len(audio)), CipherBytes: s.Cache.CipherSize(sg.key),
 			KEKVersion: s.Cache.CurrentVersion(),
 		}); err != nil {

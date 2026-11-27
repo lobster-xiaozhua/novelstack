@@ -1,6 +1,7 @@
 package com.novelstack.reader.db
 
 import app.cash.sqldelight.db.SqlDriver
+import com.novelstack.reader.search.PinyinProvider
 import kotlinx.datetime.Clock
 
 /** FTS 能力：trigram 最适合中文子串，unicode61 作为退路，NONE 时用 LIKE。 */
@@ -12,6 +13,8 @@ data class SearchHit(
     val chapterIndex: Int,
     val chapterTitle: String,
     val snippet: String,
+    /** text=正文/标题命中；pinyin=书名或作者拼音命中（chapterIndex=-1，书籍级）。 */
+    val matchType: String = "text",
 )
 
 /**
@@ -23,6 +26,8 @@ data class SearchHit(
 class ReaderRepository(
     private val db: ReaderDatabase,
     private val driver: SqlDriver,
+    /** 拼音生成器；默认 None（其他平台或单测不启用拼音索引）。 */
+    private val pinyin: PinyinProvider = PinyinProvider.None,
 ) {
     private val q = db.readerDatabaseQueries
     private val raw = RawDb(driver)
@@ -62,7 +67,19 @@ class ReaderRepository(
                 kek_version = b.kekVersion.toLong(), sync_seq = b.syncSeq,
                 wrapped_dek = b.wrappedDek, updated_at = b.updatedAt,
             )
+            updatePinyin(b.id, b.title, b.author)
         }
+    }
+
+    /** 重建某本书的拼音索引（书名 + 作者）。拼音列为后加列，用 raw SQL 写入。 */
+    fun updatePinyin(bookId: String, title: String, author: String) {
+        if (pinyin === PinyinProvider.None) return
+        val full = (pinyin.full(title) + pinyin.full(author)).trim()
+        val initials = (pinyin.initials(title) + pinyin.initials(author)).trim()
+        raw.exec(
+            "UPDATE books SET pinyin = ?, pinyin_initials = ? WHERE id = ?",
+            listOf(full, initials, bookId),
+        )
     }
 
     fun listBooks(): List<Books> = q.selectBooks().executeAsList()
@@ -71,6 +88,13 @@ class ReaderRepository(
     fun ensureColumns() {
         runCatching {
             raw.exec("ALTER TABLE books ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0")
+        }
+        // 第九阶段：拼音索引列（老库通过 ALTER 补齐，重复执行会抛错并被忽略）。
+        runCatching {
+            raw.exec("ALTER TABLE books ADD COLUMN pinyin TEXT NOT NULL DEFAULT ''")
+        }
+        runCatching {
+            raw.exec("ALTER TABLE books ADD COLUMN pinyin_initials TEXT NOT NULL DEFAULT ''")
         }
     }
 
@@ -140,6 +164,12 @@ class ReaderRepository(
             )
         }
 
+    /** 有至少一章正文缓存的书籍 id 集合（离线模式下书架只展示这些）。 */
+    fun cachedBookIds(): Set<String> =
+        raw.query("SELECT DISTINCT book_id FROM chapters WHERE cached = 1") { c ->
+            c.getString(0) ?: ""
+        }.filter { it.isNotEmpty() }.toSet()
+
     fun chapterIndexes(bookId: String): List<Int> =
         q.selectChapterIndexes(bookId).executeAsList().map { it.toInt() }
 
@@ -147,6 +177,18 @@ class ReaderRepository(
 
     /** 最近阅读章节：用于打开书时恢复位置。 */
     fun lastChapter(bookId: String): Int = chapterIndexes(bookId).maxOrNull() ?: 0
+
+    /**
+     * 为老库补齐拼音索引（升级后第一次启动调用）。
+     * 书籍数量很少，全量重算比维护「哪些书已索引」的状态更简单。
+     */
+    fun rebuildPinyin() {
+        if (pinyin === PinyinProvider.None) return
+        val rows = raw.query("SELECT id, title, COALESCE(author,'') FROM books") { c ->
+            Triple(c.getString(0) ?: "", c.getString(1) ?: "", c.getString(2) ?: "")
+        }
+        for ((id, title, author) in rows) updatePinyin(id, title, author)
+    }
 
     fun search(query: String, limit: Int = 50): List<SearchHit> {
         val needle = query.trim()
@@ -169,6 +211,29 @@ class ReaderRepository(
                     chapterTitle = c.getString(2) ?: "",
                     snippet = c.getString(3) ?: "",
                     bookTitle = c.getString(4) ?: "",
+                )
+            }
+            hits.addAll(rows)
+        }
+        // 拼音：只在纯拉丁查询时尝试（`xiaoshuo` / `xs`），命中后按书籍返回。
+        if (pinyin !== PinyinProvider.None && pinyin.isLatinQuery(needle) && needle.length >= 2) {
+            val q = "%" + escapeLike(needle.lowercase()) + "%"
+            val rows = raw.query(
+                """SELECT b.id, b.title, COALESCE(b.author, '')
+                   FROM books b
+                   WHERE b.pinyin LIKE ? ESCAPE '\' OR b.pinyin_initials LIKE ? ESCAPE '\'
+                   ORDER BY b.title LIMIT ?""",
+                listOf(q, q, limit),
+            ) { c ->
+                val title = c.getString(1) ?: ""
+                val author = c.getString(2) ?: ""
+                SearchHit(
+                    bookId = c.getString(0) ?: "",
+                    bookTitle = title,
+                    chapterIndex = -1,
+                    chapterTitle = if (author.isBlank()) "书名拼音命中" else "书名/作者拼音命中",
+                    snippet = "拼音匹配：$needle",
+                    matchType = "pinyin",
                 )
             }
             hits.addAll(rows)

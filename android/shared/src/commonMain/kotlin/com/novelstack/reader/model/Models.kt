@@ -117,6 +117,31 @@ data class ProgressRequest(
     @SerialName("char_offset") val charOffset: Int,
     val percent: Double,
     @SerialName("device_id") val deviceId: String = "",
+    /**
+     * 本次上报间隔内的真实阅读秒数（服务端按 600 秒封顶）。
+     * 只用于统计，不参与进度合并；服务端不会用它当时间戳。
+     */
+    @SerialName("read_seconds") val readSeconds: Int = 0,
+)
+
+/** 阅读统计的一天（服务端按它的时区归日）。 */
+@Serializable
+data class ReadingDay(
+    val day: String = "",
+    val seconds: Long = 0,
+    val chapters: Long = 0,
+)
+
+/** GET /api/stats/reading 的返回。 */
+@Serializable
+data class ReadingStats(
+    @SerialName("today_seconds") val todaySeconds: Long = 0,
+    @SerialName("total_seconds") val totalSeconds: Long = 0,
+    @SerialName("streak_days") val streakDays: Int = 0,
+    @SerialName("best_streak") val bestStreak: Int = 0,
+    @SerialName("total_days") val totalDays: Int = 0,
+    @SerialName("last_read_at") val lastReadAt: String = "",
+    val days: List<ReadingDay> = emptyList(),
 )
 
 @Serializable

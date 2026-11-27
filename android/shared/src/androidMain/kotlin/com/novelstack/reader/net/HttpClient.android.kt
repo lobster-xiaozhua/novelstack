@@ -33,7 +33,14 @@ fun createHttpClient(): HttpClient {
     }
     client.plugin(HttpSend).intercept { request ->
         val started = Telemetry.now()
-        val call = execute(request)
+        // 超时计数：连续 3 次超时进入离线模式（4xx/5xx 不算，服务器还活着）。
+        val call = try {
+            execute(request)
+        } catch (t: Throwable) {
+            NetworkCircuit.onFailure(t)
+            throw t
+        }
+        NetworkCircuit.onSuccess()
         runCatching {
             // 上传遥测本身的请求不记录，否则每轮上传都会给自己加一条，形成噪音。
             // 只取路径段，天然排除 query（可能含书名/关键词）与 host。

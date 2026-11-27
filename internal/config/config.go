@@ -3,13 +3,17 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	// 内嵌时区库：容器里没有 /usr/share/zoneinfo 时 READING_TZ 仍可用。
+	_ "time/tzdata"
 )
 
 // Config 是进程级只读配置。
@@ -137,7 +141,32 @@ type Config struct {
 	AppMirrors []string
 	// 最新 APK 的 SHA-256（hex）：客户端测速下载后必须校验该值才允许安装。
 	AppAPKSHA256 string
+
+	// ---- 第九阶段：正文净化与双音色朗读 ----
+
+	// 正文明文净化规则（按顺序删除命中内容）。来源 REGEX_PURGE_RULES，
+	// 支持 JSON 数组、换行分隔、";;" 分隔三种写法。
+	PurgeRules []string
+	// 对话音色；为空表示不启用双音色（全部用请求里的 voice）。
+	TTSDialogueVoice string
+	// 识别对话段落的正则（必须含一个捕获组，捕获组内容作为对话文本朗读）。
+	TTSDialoguePattern string
+
+	// ---- 第九阶段：阅读统计 ----
+
+	// 统计「今天」使用的时区（IANA 名称），默认 Asia/Shanghai。
+	// 用服务端时区而不是客户端时间，避免设备改时间刷出假的阅读天数。
+	ReadingTZ string
+	// 导出单次最多包含的书籍数（防止一次请求把整个库打进内存）。
+	ExportMaxBooks int
 }
+
+// voiceNamePattern 与 tts 包内的校验保持一致（配置阶段先挡一次，避免朗读时才 400）。
+var voiceNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.\-]{1,64}$`)
+
+// DefaultDialoguePattern 匹配中文/英文引号包裹的对话。
+// 使用捕获组：只有组内文本按对话音色朗读，引号本身不朗读。
+const DefaultDialoguePattern = `[“"「『]([^”"」』\n]{1,400})[”"」』]`
 
 // FromEnv 从环境变量构建配置。任何关键错误都返回 error，由 main 打印后退出。
 func FromEnv() (*Config, error) {
@@ -201,6 +230,13 @@ func FromEnv() (*Config, error) {
 		AppChangelog: envStr("APP_CHANGELOG", ""),
 		AppMirrors:   splitList(envStr("APP_MIRRORS", "")),
 		AppAPKSHA256: strings.ToLower(strings.TrimSpace(envStr("APP_APK_SHA256", ""))),
+
+		PurgeRules:         parseRules(envStr("REGEX_PURGE_RULES", "")),
+		TTSDialogueVoice:   strings.TrimSpace(envStr("TTS_DIALOGUE_VOICE", "")),
+		TTSDialoguePattern: envStr("TTS_DIALOGUE_PATTERN", DefaultDialoguePattern),
+
+		ReadingTZ:      envStr("READING_TZ", "Asia/Shanghai"),
+		ExportMaxBooks: envInt("EXPORT_MAX_BOOKS", 200),
 	}
 	if c.ChunkSize < 64<<10 || c.ChunkSize > 16<<20 {
 		return nil, fmt.Errorf("CHUNK_SIZE 必须在 64KiB..16MiB 之间")
@@ -254,6 +290,15 @@ func FromEnv() (*Config, error) {
 	}
 	if c.AlertCooldown < time.Minute || c.AlertCooldown > 24*time.Hour {
 		return nil, fmt.Errorf("ALERT_COOLDOWN_MINUTES 必须在 1..1440 之间")
+	}
+	if _, err := time.LoadLocation(c.ReadingTZ); err != nil {
+		return nil, fmt.Errorf("READING_TZ 不是合法的 IANA 时区 %q: %w", c.ReadingTZ, err)
+	}
+	if c.ExportMaxBooks < 1 || c.ExportMaxBooks > 5000 {
+		return nil, fmt.Errorf("EXPORT_MAX_BOOKS 必须在 1..5000 之间")
+	}
+	if c.TTSDialogueVoice != "" && !voiceNamePattern.MatchString(c.TTSDialogueVoice) {
+		return nil, fmt.Errorf("TTS_DIALOGUE_VOICE 只能包含字母、数字、下划线、点和连字符（≤64）")
 	}
 	if c.AlertWebhook != "" {
 		u, err := url.Parse(c.AlertWebhook)
@@ -357,6 +402,38 @@ func splitList(s string) []string {
 		}
 		seen[v] = true
 		out = append(out, v)
+	}
+	return out
+}
+
+// parseRules 解析净化规则。三种写法都支持，避免正则里的逗号被误当分隔符：
+//   - JSON 数组：["请记住本站.*","https?://\\S+"]
+//   - 换行分隔（推荐，可读性最好）
+//   - ";;" 分隔（便于单行环境变量）
+func parseRules(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var parts []string
+	if strings.HasPrefix(raw, "[") {
+		var arr []string
+		if err := json.Unmarshal([]byte(raw), &arr); err == nil {
+			parts = arr
+		}
+	}
+	if parts == nil {
+		sep := "\n"
+		if !strings.Contains(raw, "\n") && strings.Contains(raw, ";;") {
+			sep = ";;"
+		}
+		parts = strings.Split(raw, sep)
+	}
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
 	}
 	return out
 }

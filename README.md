@@ -1919,3 +1919,258 @@ device token 访问控制台接口统一 403（与其它 admin 接口一致）�
 4. **热力图与 P95 是窗口内精确值**：`overview` 直接扫明细（上限 5 万行），超大数据量下应改为读 `telemetry_rollups`；私有站规模足够。
 5. **厂商页面可能变更**：ROM 升级会改组件名，跳转失败时统一降级到应用详情页，不保证每次都能直达开关。
 6. **遥测开关是编译期默认开启**：当前未在 UI 提供「完全关闭采集」的开关，只提供「清空本地」；如需合规开关，应在 `Telemetry.enabled` 上接一个设置项。
+
+---
+
+## 20. 第九阶段（整合版）：架构升维与重度阅读体验
+
+前八阶段的功能是「能读、能听、能同步」，这一阶段补的是**让这些能力在长期使用中不出错**：删掉的书不能变成幽灵数据、设备改时间不能污染进度、盗版广告不该被念出来、离线读的内容不该丢。六项能力里有两项（软删除闭环、服务端授时）属于对既有实现的收口，其余四项是新功能。
+
+### 20.1 能力清单
+
+| 类别 | 新增 |
+|---|---|
+| 数据一致性 | 软删除 + 墓碑下发 + 客户端清理元数据/密文/索引；TTS 缓存按「书籍已删除」立即回收 |
+| 时钟治理 | 进度接口忽略请求体里的任何时间字段，只用服务端 UTC；LWW 合并；客户端离线进度弹窗 |
+| 正文净化 | `REGEX_PURGE_RULES` 多规则合并扫描、RE2 线性时间、规则指纹参与 ETag |
+| TTS 双音色 | 按正则切分旁白/对话，分别用不同 voice 合成；缓存键含音色 |
+| 阅读统计 | `reading_daily` 日聚合、`GET /api/stats/reading`、控制台与客户端柱状图 + 日历热力图 |
+| 拼音搜索 | TinyPinyin 生成全拼/首字母写入 `books.pinyin`，支持 `xiaoshuo` / `xs` 命中 |
+| 离线熔断 | 连续 3 次超时进入离线模式：横幅、只显示已缓存书、未缓存章节置灰、遥测静默堆积 |
+| 数据退路 | `POST /api/admin/export`：密码二次验证，导出 TXT / EPUB（含目录）ZIP |
+
+### 20.2 数据一致性：软删除、墓碑与授时
+
+`books.deleted_at` 在第一阶段就存在，但当时只做到「查询过滤」。这一阶段把链路补完整：
+
+1. **只软删，不物理删**：`DELETE /api/books/{id}` 写 `deleted_at` 并推进 `sync_seq`（这样增量同步才会带上它）。密文文件保留，便于误删恢复（当前没有恢复入口，属于已知限制）。
+2. **墓碑下发**：`GET /api/sync/manifest?since=N` 的 `deleted: []string` 携带已删除书籍 ID。全量同步（`since=0`）不下发墓碑——客户端本来就要清库重建。
+3. **客户端清理**：收到墓碑后 `ReaderRepository.deleteBook()` 依次删除 `chapters`（含缓存的明文/密文正文）、`chapters_fts` 的对应行、`books` 行。三张表在同一个库（SQLCipher 整库加密），删完即无残留。
+4. **音频缓存回收**：`PruneCache` 开头先执行 `purgeDeletedBookSegments`——`tts_segments JOIN books WHERE deleted_at IS NOT NULL`，把对应音频文件与索引行删掉，并计入 `removed_deleted`。这一步**不受容量/时间策略影响**（零策略也会执行），服务端每 6 小时跑一次，启动时也跑一次。
+
+授时方面：
+
+- `PUT /api/books/{id}/progress` 的请求体只接受 `chapter_index / char_offset / percent / device_id / read_seconds`。即使客户端多传 `updated_at`，JSON 解码会直接忽略，服务端一律用 `time.Now().UTC()` 写入。
+- 合并策略是 LWW（`ON CONFLICT(owner_id, book_id) DO UPDATE`），没有向量时钟——单用户多设备场景下够用，代价是「两台设备同时读不同章」会互相覆盖。
+- 客户端在打开书籍且**本地存在未同步进度**时，会拉一次云端进度比较：若云端章节索引更小（说明离线期间读得更远），弹出对话框：
+
+```
+检测到离线进度
+本机停在第 12 章（共 40 章），云端记录在第 5 章。
+离线期间读得更远，是否跳转到本地进度？
+[跳到第 12 章]  [留在云端进度]
+```
+
+选择「留在云端」会把本地记录回退到云端位置并加载该章，避免下次再弹。
+
+### 20.3 正文净化（去广告）
+
+配置示例（三种写法都支持，推荐换行分隔——正则里的逗号不会被误当分隔符）：
+
+```bash
+REGEX_PURGE_RULES='请记住本站[^\n]*
+https?://[a-z0-9.-]*novel[^\s]*
+本章未完，请点击下一页继续阅读'
+```
+
+也支持 JSON 数组与 `;;` 分隔（便于塞进单行 env）。
+
+实现要点（`internal/purge`）：
+
+| 关注点 | 做法 |
+|---|---|
+| 速度 | 所有规则编译后合并成一条 `(?:r1)|(?:r2)|...`，**一次扫描**完成；无规则时直接返回原串（零拷贝） |
+| 安全 | Go regexp 是 RE2，最坏线性时间，不存在回溯爆炸；规则数 ≤ 64、单条 ≤ 512B、合并 ≤ 16KB，超限启动失败 |
+| 排版 | 删句后残留的连续空行折叠为最多一个空行 |
+| 可观测 | 启动日志只打印条数，不打印规则内容与命中文本 |
+
+生效位置（都在「解密之后、输出之前」）：
+
+- `GET /api/books/{id}/chapters/{i}/plain`（浏览器直读）
+- `POST /api/books/{id}/chapters/prefetch` 的**密封包**——客户端本地缓存的就是净化后的文本
+- TTS 朗读（广告句不会被念出来）
+- 数据导出
+
+**缓存一致性**：规则指纹（合并表达式的 SHA-256 前 12 位）参与章节 ETag 计算。运维改了规则并重启后，客户端 `If-None-Match` 不再命中，会自动重新拉取整章——不需要手动清缓存。
+
+### 20.4 TTS 旁白 / 对话双音色
+
+```bash
+TTS_VOICE=narrator-voice          # 旁白（原有配置，作为默认 voice）
+TTS_DIALOGUE_VOICE=dialogue-voice # 对话；留空则关闭双音色
+TTS_DIALOGUE_PATTERN='[“"「『]([^”"」』\n]{1,400})[”"」』]'  # 必须含捕获组
+```
+
+切分规则（`internal/tts/dialogue.go`）：
+
+1. 用 `DialoguePattern` 在章节里找出所有对话；
+2. 捕获组 1 的内容标为「对话」，其余部分标为「旁白」（引号本身丢弃，不朗读）；
+3. 相邻同类型段落合并，再各自按原逻辑做 ≤100 字的等长切分；
+4. 每个片段按自己的音色合成，`CacheKey(provider, voice, speed, format, text)` 因此天然区分——同一句话在两种音色下是两条缓存，不会互相覆盖。
+
+输出仍是「WAV 片段序列」（`X-TTS-Stream: wav-segments`），客户端按 RIFF 头切分逐段播放，因此不同音色的采样率/声道差异不会破坏播放。请求可用 `?dialogue_voice=` 覆盖配置的音色。
+
+### 20.5 阅读统计
+
+迁移 v9 新增：
+
+```sql
+CREATE TABLE reading_daily (
+    owner_id TEXT NOT NULL,
+    day      TEXT NOT NULL,   -- 服务端时区日历日（默认 Asia/Shanghai）
+    seconds  INTEGER NOT NULL DEFAULT 0,
+    chapters INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner_id, day)
+);
+```
+
+时长从哪来：客户端在 `reportProgress` 里带上 `read_seconds`（两次上报之间的活跃时长，单次封顶 120 秒、服务端再封顶 600 秒）。这是估算而非精确计时——翻页很快时可能少算几秒，但不会把「挂在后台」的时间算进去（阅读页打开时才开始计时）。
+
+`GET /api/stats/reading` 返回：
+
+```json
+{
+  "today_seconds": 1260, "total_seconds": 98400,
+  "streak_days": 5, "best_streak": 11, "total_days": 37,
+  "last_read_at": "2026-11-27T09:12:33.412Z",
+  "days": [{ "day": "2026-08-30", "seconds": 0, "chapters": 0 }, "... 共 90 天"]
+}
+```
+
+- 「今天还没读」不算断签：当前连续天数从今天起算，今天为 0 则从昨天起算。
+- 日历窗口固定 90 天且补齐空白天，前端直接画图，不做日期补全。
+- 控制台「阅读统计」页：4 个 KPI + 30 天柱状图 + 90 天热力图（纯 CSS/div，不引图表库）。
+- 客户端：设置 → 阅读统计，Compose 手绘柱状图与热力图（无第三方图表依赖）。
+
+### 20.6 拼音与模糊搜索
+
+- Android 端用 TinyPinyin（约 250KB）把书名与作者转成**全拼**（`xiaoshuo`）与**首字母**（`xs`），写入 `books.pinyin` / `books.pinyin_initials`（后加列，`ensureColumns()` 幂等 ALTER，升级后首次启动 `rebuildPinyin()` 全量回填）。
+- 查询是纯拉丁字母且长度 ≥ 2 时，在 FTS 之前先做一次 `pinyin LIKE '%q%'`，命中返回**书籍级结果**（`chapterIndex = -1`，UI 显示「打开这本书」）。
+- 中文正文仍是 FTS5 trigram 子串匹配（错别字/漏字不会命中，这是 trigram 的固有限制，已在已知限制中说明）；FTS 不可用时回退 `LIKE`。
+
+### 20.7 离线降级熔断
+
+`NetworkCircuit`（进程级单例）只统计**超时**：
+
+```kotlin
+连续 3 次超时 → offline = true
+任意一次成功 → 立即恢复
+4xx/5xx 不计（服务器活着，只是这个请求失败）
+```
+
+进入离线模式后：
+
+| 位置 | 行为 |
+|---|---|
+| 顶部 | 红色横幅「服务器连接失败，已进入离线模式」+ 重试按钮（重置计数并 sync） |
+| 书架 | 只显示「至少有一章缓存」的书，并标注「离线模式：仅显示已缓存书籍（3/12）」 |
+| 目录 | 未缓存章节置灰、不可点击；「下一章」在目标章未缓存时禁用 |
+| 错误提示 | `friendly()` 统一改成离线文案，不弹错误框 |
+| 遥测 | 继续本地落盘，WorkManager 仍受 UNMETENRED 约束，不会偷跑流量 |
+
+**顺带修掉的一个真 bug**：`RawDb.bind` 把参数索引写成 `i + 1`，而 SqlDelight 的 `SqlPreparedStatement` 约定是 **0-based**（Android 驱动内部 `index + 1`，JDBC 驱动直接透传给 sqlite-jdbc 的 0-based API）。结果是所有带 ≥2 个参数的 raw SQL 都绑定错位，JVM 上直接数组越界。拼音索引测试把这个潜伏问题炸了出来，现已修正——FTS 写入、按书删除缓存等路径因此变正确。
+
+### 20.8 防锁定数据导出
+
+```
+POST /api/admin/export
+{ "password": "<当前管理员密码>", "book_ids": ["..."], "format": "txt" | "epub" }
+```
+
+- 仅浏览器会话（`requireSession`）可调用，且必须再次输入**当前账户密码**；错误按 IP 限流（复用登录限流器），统一返回 401，不区分「密码错」与「用户不存在」。
+- 响应是**流式 ZIP**：`Content-Type: application/zip`，边解密边写，不落地中间明文文件。
+- 单本失败（解密失败/文件缺失）只跳过该书并记审计，不中断整包。
+- 文件名用 `SafeFileName` 清洗：去掉 `/ \ : * ? " < > |`、控制字符、前后点号，限长 80 字符；重名追加 `(2)`。
+- EPUB 是最小合规结构：`mimetype`（必须是第一个且 STORED）+ `META-INF/container.xml` + `content.opf` + `nav.xhtml` + `toc.ncx`（兼容老阅读器）+ 每章一个 XHTML；所有文本经 XML 转义。
+- 导出内容同样应用净化规则，与在线阅读看到的一致。
+
+### 20.9 文件树（本阶段新增 / 修改）
+
+```
+internal/
+  purge/purge.go                        规则编译、合并扫描、空行折叠、指纹
+  purge/purge_test.go                   删广告/不改正文/指纹/非法规则/长文本
+  tts/dialogue.go                       旁白-对话切分（捕获组语义）
+  tts/dialogue_test.go                  切分、相邻合并、双音色缓存键
+  tts/service.go                        seg.voice、buildSegments 双音色、synthesize 用片段音色
+  tts/admin.go                          PruneCache 前置软删除回收 + RemovedDeleted
+  stats/stats.go                        AddDaily / Overview / streaks
+  stats/stats_test.go                   累加、封顶、连续天数、断签
+  export/export.go                      TXT、EPUB、SafeFileName、EntryName
+  export/export_test.go                 EPUB 结构、转义、路径穿越、重名
+  server/stats.go                       GET /api/stats/reading
+  server/export.go                      导出预览与流式导出
+  server/stage9_test.go                 授时、净化、导出、墓碑、缓存回收
+  server/device.go                      进度接收 read_seconds + 审计
+  server/server.go                      Deps.Stats、三条新路由
+  books/books.go                        Service.Purge / PurgeVariant / PurgeText
+  books/chapters.go                     ChapterETag 带指纹、ChapterPlain 净化
+  books/device.go                       prefetch 密封前净化
+  mobile/manifest.go                    BuildManifestWithVariant（ETag 指纹）
+  config/config.go                      REGEX_PURGE_RULES / TTS_DIALOGUE_* / READING_TZ / EXPORT_MAX_BOOKS
+  db/db.go                              v9：reading_daily
+  app/app.go                           purge 引擎、stats 服务、每 6 小时音频回收
+
+web/src/
+  views/Stats.vue                       阅读统计 + 数据导出
+  api.js  router.js  App.vue            getReadingStats / downloadExport / 路由与侧栏
+
+android/shared/src/
+  commonMain/
+    search/Pinyin.kt                    PinyinProvider 接口 + None
+    net/OfflineCircuit.kt               超时计数与离线状态
+    db/ReaderRepository.kt              pinyin 列、updatePinyin/rebuildPinyin、拼音命中
+    db/RawDb.kt                         修正 0-based 参数绑定
+    model/Models.kt                     ReadingStats / ReadingDay / read_seconds
+    net/NovelApi.kt                     readingStats()
+    app/AppState.kt                     offline / cachedIds / 离线进度弹窗 / 阅读计时
+    ui/App.kt                           离线横幅、Stats 路由
+    ui/StatsScreen.kt                   KPI + 柱状图 + 热力图
+    ui/LibraryScreen.kt                 离线过滤与计数
+    ui/ReaderScreen.kt                  目录置灰、下一章禁用、离线进度对话框
+    ui/SettingsScreen.kt                阅读统计入口
+  androidMain/
+    search/Pinyin.android.kt            TinyPinyin 实现
+    data/AndroidReaderStore.kt          注入 TinyPinyinProvider + 回填
+    net/HttpClient.android.kt           拦截器接入熔断器
+  commonTest/net/OfflineCircuitTest.kt  3 次超时、成功重置、非超时不计
+  androidUnitTest/db/PinyinSearchTest.kt 全拼/首字母/作者/子串/非拉丁
+```
+
+### 20.10 测试与验收
+
+| 项目 | 结果 |
+|---|---|
+| Go `gofmt` / `go vet` | 无差异、无告警 |
+| Go `go test ./...` | 20 个包全绿（server 17.1s） |
+| 净化 | `TestApplyRemovesAds`（广告与 URL 删除且正文保留）、`TestApplyCollapsesBlankLines`、`TestManyRulesStillLinear`（40 条规则 × 20 万字） |
+| 双音色 | `TestSplitDialogueSeparatesNarration`、`TestBuildSegmentsUsesDifferentVoices`、`TestBuildSegmentsKeepsOrderAndText`（引号丢弃但字符不丢） |
+| 统计 | `TestProgressIgnoresClientClock`：请求体带 `updated_at: 2000-01-01`，返回的仍是服务器当前时间；`today_seconds ≥ 120`；日历窗口 90 天 |
+| 净化接口 | `TestPurgeRemovesAdsFromChapterPlain`：`/plain` 不含「请记住本站」，正文完整，无多余空行 |
+| 导出 | `TestExportRequiresPasswordAndProducesZip`：错密码 401；正确密码返回 ZIP，内容已净化；`TestExportRejectsUnknownFormat` |
+| 软删除 | `TestSoftDeleteSendsTombstone`：增量 manifest 命中 `deleted`，书籍不在增量列表，`/plain` 404 |
+| 缓存回收 | `TestSoftDeleteReclaimsAudioCache`：软删后零策略 `PruneCache` 回收全部片段，`tts_segments` 归零 |
+| Android 单测 | `:shared:testDebugUnitTest` **82 个用例 0 失败**（本阶段新增 11：拼音 6、熔断 5） |
+| Android 构建 | `:androidApp:assembleDebug` 成功 |
+
+真机手工验收（需自备设备）：
+
+1. 控制台删除一本书 → 客户端「同步」→ 书架该书消失，进搜索搜不到它的章节；
+2. 把设备时间改到 2000 年 → 翻页触发上报 → 控制台足迹里该书仍排在最前（`updated_at` 是服务器时间）；
+3. 配置 `REGEX_PURGE_RULES` 后上传含「请记住本站」的 txt → 阅读页该句消失，且首次打开会自动重拉（ETag 变了）；
+4. 配置 `TTS_DIALOGUE_VOICE` 后朗读一段带引号对话 → 对话部分音色不同；
+5. 搜索框输入 `xiaoshuo` 与 `xs` → 都能命中《小说》；
+6. 拔网线/关服务器 → 连续操作 3 次 → 顶部出现离线横幅，未缓存章节变灰；恢复后点「重试」横幅消失；
+7. 控制台「阅读统计」→ 导出 EPUB → 用任意阅读器打开，目录与章节完整。
+
+### 20.11 已知限制
+
+1. **没有「恢复已删除书籍」入口**：软删除只保证数据不丢，恢复需要手工改 `deleted_at`。设计上留了空间，但本阶段没做 UI。
+2. **LWW 会覆盖**：两台设备同时读不同章时，后上报的一方胜出，落后的进度不保留。私有单用户场景可接受。
+3. **阅读时长是估算**：来自进度上报的时间差（单次 ≤120s），不是精确的前台计时；长时间停留在一页不翻页时，只在下次上报时补计一次。
+4. **拼音多音字取首读音**：`重庆` 会得到 `zhongqing`，这是 TinyPinyin 字表级方案的固有限制；书名场景影响很小。
+5. **错别字不模糊**：trigram 是子串匹配，`小説`（日文汉字）不会命中 `小说`。真正的编辑距离模糊需要额外索引，未做。
+6. **净化正则仍可能误伤**：例如规则写成 `第.*章` 会把正文里的「第一章节」也删掉。建议先用 `DryRun` 思路小范围验证——当前没有预览接口，只能改配置后重启观察。
+7. **导出是同步请求**：整库导出期间占用一个 HTTP 连接与一把解密锁，大库（>200 本）建议分批；`EXPORT_MAX_BOOKS` 默认 200 会直接拒绝超量请求。
+8. **双音色不跨段混读**：一个片段只会用一种音色。若对话与旁白在同一句里（「他说：」+ 引号内容被切在同一 100 字块内），切分仍按引号边界处理，不会出现半句换声。

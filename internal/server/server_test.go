@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -32,8 +33,10 @@ import (
 	"novelstack/internal/devices"
 	"novelstack/internal/legado"
 	"novelstack/internal/ops"
+	"novelstack/internal/purge"
 	"novelstack/internal/search"
 	"novelstack/internal/server"
+	"novelstack/internal/stats"
 	"novelstack/internal/telemetry"
 	"novelstack/internal/tts"
 	"novelstack/internal/ttscache"
@@ -45,6 +48,10 @@ type stack struct {
 	ts      *httptest.Server
 	dataDir string
 	sched   *backup.Scheduler
+	// 第九阶段：测试需要直接检查数据库与缓存回收结果。
+	db    *sql.DB
+	books *books.Service
+	tts   *tts.Service
 }
 
 // stackOpts 控制测试栈的组件配置。
@@ -60,6 +67,8 @@ type stackOpts struct {
 	// 第六阶段：是否装配自动备份调度器 / 告警 webhook。
 	autoBackup bool
 	webhook    string
+	// 第九阶段：正文净化规则（为空表示不净化）。
+	purgeRules []string
 }
 
 // buildStack 组装完整服务。可以重复调用以模拟容器重启（同一 dataDir）。
@@ -97,6 +106,9 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		TTSDefaultSpeed:    1.0,
 		TTSMaxAudioBytes:   16 << 20,
 
+		ReadingTZ:      "UTC",
+		ExportMaxBooks: 200,
+
 		PrefetchMaxChapters: opts.prefetchMaxChapters,
 		PrefetchPerMinute:   opts.prefetchPerMinute,
 		PrefetchMaxBytes:    8 << 20,
@@ -131,6 +143,10 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 	}
 	health := ops.NewHealthStore(ops.HealthOptions{Webhook: opts.webhook, Audit: a, Cooldown: time.Hour})
 
+	purgeEngine, perr := purge.New(opts.purgeRules)
+	if perr != nil {
+		t.Fatalf("purge rules: %v", perr)
+	}
 	bookSvc := &books.Service{
 		Store:         books.NewStore(database),
 		KEK:           kek,
@@ -138,6 +154,7 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		ChunkSize:     cfg.ChunkSize,
 		MaxUpload:     cfg.MaxUploadBytes,
 		Audit:         a,
+		Purge:         purgeEngine,
 	}
 	cache, err := ttscache.New(cfg.TTSCacheDir, kek, cfg.TTSMaxAudioBytes)
 	if err != nil {
@@ -178,10 +195,11 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		Search: searchSvc, Legado: legadoSvc, Audit: a, DB: database,
 		Devices: devices.NewStore(database), Health: health, Scheduler: sched,
 		Telemetry: telemetry.NewStore(database),
+		Stats:     stats.New(database, time.UTC),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	cleanup(ts.Close)
-	return &stack{ts: ts, dataDir: dataDir, sched: sched}
+	return &stack{ts: ts, dataDir: dataDir, sched: sched, db: database, books: bookSvc, tts: ttsSvc}
 }
 
 func newStack(t *testing.T) *stack {

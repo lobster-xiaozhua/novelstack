@@ -38,7 +38,11 @@ internal class RawDb(private val driver: SqlDriver) {
 
 private fun SqlPreparedStatement.bind(args: List<Any?>) {
     args.forEachIndexed { i, v ->
-        val idx = i + 1
+        // SqlDelight 的 SqlPreparedStatement 约定索引从 0 开始：
+        // Android 驱动内部会 +1 转成 SupportSQLiteStatement 的 1-based，
+        // JDBC 驱动则直接透传给 sqlite-jdbc 的 0-based API。
+        // 这里若写成 i+1，两端都会错位（JVM 上直接数组越界）。
+        val idx = i
         when (v) {
             // SQLDelight 2.0 的 SqlPreparedStatement 没有 bindNull：绑一个 null 字符串即为 NULL。
             null -> bindString(idx, null)

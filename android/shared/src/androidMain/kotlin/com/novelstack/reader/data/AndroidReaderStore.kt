@@ -4,6 +4,7 @@ import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.novelstack.reader.db.ReaderDatabase
 import com.novelstack.reader.db.ReaderRepository
 import com.novelstack.reader.platform.DeviceKeyStore
+import com.novelstack.reader.search.TinyPinyinProvider
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 /**
@@ -29,8 +30,10 @@ fun createReaderStore(
         name = "reader.db",
         factory = factory,
     )
-    val repo = ReaderRepository(ReaderDatabase(driver), driver)
+    val repo = ReaderRepository(ReaderDatabase(driver), driver, TinyPinyinProvider)
     repo.ensureColumns()
     repo.initFts()
+    // 老库升级到第九阶段后，books.pinyin 还是空的：启动时补一次。
+    repo.rebuildPinyin()
     return repo
 }

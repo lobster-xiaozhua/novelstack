@@ -75,6 +75,8 @@ fun ReaderScreen(state: AppState, bookId: String) {
     val systemDark = isSystemInDarkTheme()
     val palette = readerPaletteFor(settings.theme, systemDark)
     val favorite = books.firstOrNull { it.id == bookId }?.is_favorite != 0L
+    val offline by state.offline.collectAsState()
+    val prompt by state.offlinePrompt.collectAsState()
 
     var showToc by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -231,7 +233,8 @@ fun ReaderScreen(state: AppState, bookId: String) {
                     )
                     TextButton(
                         onClick = { state.goChapter(r.index + 1) },
-                        enabled = r.index < r.chapters.size - 1,
+                        enabled = r.index < r.chapters.size - 1 &&
+                            (!offline || r.chapters.getOrNull(r.index + 1)?.cached == true),
                     ) {
                         Text(
                             "下一章",
@@ -244,6 +247,31 @@ fun ReaderScreen(state: AppState, bookId: String) {
         }
     }
 
+    val p = prompt
+    if (p != null && p.bookId == bookId) {
+        AlertDialog(
+            onDismissRequest = { state.resolveOfflinePrompt(useLocal = true) },
+            title = { Text("检测到离线进度") },
+            text = {
+                Text(
+                    "本机停在第 ${p.localChapter + 1} 章（共 ${p.totalChapters} 章），" +
+                        "云端记录在第 ${p.remoteChapter + 1} 章。\n\n" +
+                        "离线期间读得更远，是否跳转到本地进度？",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { state.resolveOfflinePrompt(useLocal = true) }) {
+                    Text("跳到第 ${p.localChapter + 1} 章")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { state.resolveOfflinePrompt(useLocal = false) }) {
+                    Text("留在云端进度")
+                }
+            },
+        )
+    }
+
     if (showToc) {
         AlertDialog(
             onDismissRequest = { showToc = false },
@@ -254,7 +282,8 @@ fun ReaderScreen(state: AppState, bookId: String) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable {
+                                // 当前章已在内存里，即使 cached 标记还没刷新也允许点击。
+                                .clickable(enabled = !offline || c.cached || c.index == r.index) {
                                     showToc = false
                                     state.goChapter(c.index)
                                 }
@@ -271,6 +300,11 @@ fun ReaderScreen(state: AppState, bookId: String) {
                                 c.title.ifBlank { "第 ${c.index + 1} 章" },
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = if (c.index == r.index) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (offline && !c.cached) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
                                 modifier = Modifier.weight(1f),
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
