@@ -1688,3 +1688,234 @@ APP_APK_SHA256=<构建产物的 sha256 十六进制>
 **测试与 CI**
 - `commonTest/.../update/Sha256Test.kt`、`update/UpdatePlannerTest.kt`、`reading/PrefetchGateTest.kt`、`reading/KinsokuTest.kt`、`app/AppVersionTest.kt`
 - `.github/workflows/release-apk.yml`（打 tag 构建 + 多镜像上传 + 哈希输出）
+
+## 19. 第九阶段：多机型适配与全链路遥测
+
+本阶段解决两件此前没做的事：**让客户端在国产 ROM 上活下来**，以及**在不碰正文的前提下把运行状况带回来**。前者是保活与合规，后者是可观测性；两者的共同约束是——数据只能描述「发生了什么」，不能描述「读到了什么」。
+
+### 19.1 能力清单
+
+| 类别 | 新增 |
+|---|---|
+| 系统适配 | Android 13+ 通知权限动态申请、忽略电池优化引导、小米/华为/OPPO/vivo/三星自启动页跳转、网络状态监听与横幅 |
+| 前台服务 | `PlaybackService` 保持 `mediaPlayback`；新增 `SyncService` 声明 `dataSync` |
+| 屏幕适配 | Edge-to-Edge、挖孔 Insets、阅读页「隐藏刘海」开关、书架随宽度自适应多列（折叠屏展开即两列） |
+| 遥测采集 | 全局崩溃、ANR 看门狗、慢章节、TTS 首帧、连续掉帧、预读/搜索统计、接口耗时、冷启动 |
+| 遥测可靠性 | 独立 `telemetry.db` 同步落盘、5 分钟同栈合并、100 行堆栈截断、5MB/1000 条 FIFO + 24h 崩溃豁免、7 天本地清理 |
+| 上传策略 | WorkManager `UNMETERED` + `requiresBatteryNotLow`、进前台触发、成功即删、失败指数退避 |
+| 服务端 | `POST /api/telemetry/batch`（gzip）、`telemetry_events` 明细、小时聚合 P50/P95、90 天清理、5 个控制台查询接口 |
+| 控制台 | 「体验调优」大屏：KPI、机型热力图、最慢章节、崩溃堆栈展开 |
+
+### 19.2 文件树（本阶段新增 / 修改）
+
+```
+internal/
+  db/db.go                              v8：telemetry_events + telemetry_rollups + 3 条索引
+  telemetry/
+    model.go                            事件白名单、双层清洗、堆栈截断、敏感键剔除
+    store.go                            批量写入、小时聚合、90 天清理、控制台查询
+    scheduler.go                        每 10 分钟回补最近 3 小时 + 每天一次清理
+    model_test.go                       清洗规则用例
+    store_test.go                       聚合幂等、索引计划、清理保留聚合
+  server/
+    telemetry.go                        POST /api/telemetry/batch + 5 个 /api/admin/telemetry/*
+    telemetry_test.go                   gzip 解压、清洗落库、越权 403、空库 KPI
+  app/app.go                            装配 Store + Scheduler，随 serve 启停
+
+web/src/
+  views/Telemetry.vue                   KPI / 热力图 / 慢章节 / 崩溃列表
+  api.js  router.js  App.vue            接口封装、路由与侧栏入口
+
+android/shared/src/
+  commonMain/
+    telemetry/TelemetryEvent.kt         事件模型 + 类型白名单
+    telemetry/TelemetrySanitizer.kt     清洗/指纹/截断（纯函数，可单测）
+    telemetry/TelemetryPolicy.kt        合并窗口、上限、保留期、批次
+    telemetry/TelemetryRepository.kt    同步写入、合并、淘汰、过期清理
+    telemetry/Telemetry.kt              record / crash / timed / 上传触发
+    telemetry/TelemetryUploader.kt      组包 + gzip + 成功后删除
+    app/PlatformCapabilities.kt         NetworkStatus / KeepAliveController / TelemetryControl
+    app/AppState.kt                     网络状态、预读门控、慢章节与预读/搜索埋点
+    ui/App.kt                           网络横幅、状态栏 Insets
+    ui/SettingsScreen.kt                系统保活 + 遥测面板
+    ui/ReaderScreen.kt                  隐藏刘海、Insets
+    ui/LibraryScreen.kt                 自适应多列
+    net/NovelApi.kt                     uploadTelemetry(gzip)
+    tts/TtsController.kt                TTS_FIRST_FRAME
+  androidMain/
+    telemetry/TelemetryDb.android.kt    SQLCipher 打开 telemetry.db
+    telemetry/AndroidTelemetrySink.kt   同步落盘 + 上传触发
+    telemetry/TelemetryWork.kt          Worker + UNMETERED 约束 + 每日清理
+    telemetry/AndroidTelemetryRuntime.kt Worker/服务内的独立装配
+    telemetry/Gzip.android.kt           GZIPOutputStream
+    platform/NetworkMonitor.kt          NetworkCallback → AppState
+    platform/AndroidKeepAlive.kt        电池优化 + 厂商自建 Intent
+    net/HttpClient.android.kt           仅记录路径/状态/耗时
+  androidUnitTest/
+    telemetry/TelemetryRepositoryTest.kt 10 次同异常=1 条 count=10、重启可读、淘汰豁免
+    telemetry/TelemetryWorkTest.kt       约束必须是 UNMETERED
+  commonTest/
+    telemetry/TelemetrySanitizerTest.kt  指纹稳定、敏感键剔除、100 行截断
+
+android/androidApp/src/main/
+  kotlin/.../ReaderApplication.kt       遥测装配、崩溃处理、ANR 看门狗、网络监听
+  kotlin/.../MainActivity.kt            通知权限、Edge-to-Edge、冷启动与掉帧埋点
+  kotlin/.../SyncService.kt             dataSync 前台服务
+  AndroidManifest.xml                   FOREGROUND_SERVICE_DATA_SYNC、ACCESS_NETWORK_STATE、SyncService
+  proguard-rules.pro                    保留 Worker 类名（反射实例化）
+```
+
+### 19.3 Android 13/14 适配与 ROM 保活
+
+**权限**
+
+| 权限 | 用途 | 申请方式 |
+|---|---|---|
+| `POST_NOTIFICATIONS` | TTS 与同步通知 | 启动时 `ActivityCompat.requestPermissions`（API 33+） |
+| `FOREGROUND_SERVICE_MEDIA_PLAYBACK` | 朗读 | Manifest 声明，播放时 `startForeground(type=mediaPlayback)` |
+| `FOREGROUND_SERVICE_DATA_SYNC` | 立即上传 | Manifest 声明，`SyncService` 以 `dataSync` 启动 |
+| `ACCESS_NETWORK_STATE` | 网络监听 | 安装即授予 |
+| `REQUEST_INSTALL_PACKAGES` | 应用内更新 | 安装器拉起时由系统确认 |
+
+**保活引导**（设置 → 系统保活）
+
+1. 「忽略电池优化」→ `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`，被 ROM 拦截时退回应用详情页；
+2. 「自启动设置」→ 按 `Build.MANUFACTURER` 依次尝试厂商组件，全部 `resolveActivity == null` 时打开应用详情页；
+3. 页面直接显示当前机型的菜单路径文案（小米「安全中心 → 自启动」、华为「应用启动管理」等）。
+
+| 厂商 | 首选组件 |
+|---|---|
+| 小米 / 红米 | `com.miui.securitycenter/...AutoStartManagementActivity` |
+| 华为 / 荣耀 | `com.huawei.systemmanager/...StartupNormalAppListActivity` |
+| OPPO / realme / 一加 | `com.coloros.safecenter/...StartupAppListActivity`（含 oplus 回退） |
+| vivo / iQOO | `com.vivo.permissionmanager/...BgStartUpManagerActivity` |
+| 三星 | `com.samsung.android.lool/...BatteryActivity` |
+
+> 跳转失败不会崩：所有 Intent 先 `resolveActivity` 再启动，异常一律吞掉并降级到应用详情。
+
+**网络语义**
+
+`NetworkCallback` 把状态归为三档，直接决定行为：
+
+| 状态 | 横幅 | 预读 | 遥测上传 |
+|---|---|---|---|
+| `Online`（WiFi/以太网） | 无 | 允许 | 进入前台即尝试 |
+| `Metered`（移动网络） | 「已暂停以省流量」 | 拒绝 | 暂缓（WorkManager 约束兜底） |
+| `Offline` | 「网络已断开」 | 拒绝 | 暂缓 |
+
+### 19.4 遥测：从采集到落盘再到上传
+
+**采集点**
+
+| 类型 | 触发条件 | 关键字段 |
+|---|---|---|
+| `CRASH` | 未捕获异常（`Thread.setDefaultUncaughtExceptionHandler`） | 完整堆栈（截断 100 行）、线程名 |
+| `ANR` | 主线程 5 秒未响应（1 秒 ping 的看门狗） | 主线程堆栈、阻塞时长 |
+| `SLOW_CHAPTER` | 解密 + 渲染 > 500ms | 书名·章节、章节序号、是否缓存 |
+| `TTS_FIRST_FRAME` | 点击播放 → 第一块 PCM 写入 AudioTrack | 语速、起始片段 |
+| `JANK` | 连续 3 帧 > 32ms | 最差帧耗时、连续帧数 |
+| `PRELOAD_STATS` | 手动预取 3 章 / 滚动 80% 自动预读 | 章节数、触发方式、耗时 |
+| `SEARCH_STATS` | 本地检索 | 查询长度（非内容）、命中数、耗时 |
+| `API` | 每个非遥测请求 | 路径（无 query）、方法、状态码、耗时 |
+| `COLD_START` | 进程启动 → 首帧绘制 | 耗时 |
+
+**双层清洗**
+
+客户端 `TelemetrySanitizer` 负责第一道，服务端 `telemetry.Clean` 不信任客户端再做一遍：
+
+1. **类型白名单**：不在 11 种类型内直接丢弃；
+2. **堆栈**：超过 100 行或 16KB 截断，附 `(truncated)`；
+3. **上下文**：只保留标量；键名含 `token/password/secret/authorization/cookie/ciphertext/key/content/text/body/plain/audio` 整条删除；空值丢弃；最多 16 个键、单值 200 字符；
+4. **数值**：`count` 钳到 1..10000，`duration` 钳到 24h，未来时间戳钳到当前时间。
+
+**同步落盘（核心）**
+
+- 独立库 `telemetry.db`（SQLCipher 整库加密），与 `reader.db` **物理隔离**：崩溃写入不会被业务库长事务或锁竞争挡住，「清除遥测」可整库删除；
+- `insertSync` 在调用线程直接执行 SQL（事务提交后才返回），崩溃处理链路上**没有协程、没有内存队列**；
+- 写入顺序：`insertSync` → `enforceCap` → 返回 → 才交给系统默认处理器杀进程。
+
+**容量与淘汰**
+
+| 规则 | 值 |
+|---|---|
+| 上限 | 1000 条 或 5MB（`bytes` 列为每行估算体积） |
+| 淘汰 | FIFO，每次 50 条；`oldestEvictable` 排除「24 小时内的 CRASH/ANR」 |
+| 极端情况 | 全是最新崩溃时允许暂时超限——崩溃证据优先于容量 |
+| 本地过期 | 7 天未上传直接删除（每日 Worker） |
+
+**分级上传**
+
+- `Constraints`: `NetworkType.UNMETERED` + `requiresBatteryNotLow(true)`，移动网络下 Worker 根本不会执行；
+- 触发点：`MainActivity.onResume`、登录成功、网络恢复；
+- 单批 ≤ 200 条且 ≤ 512KB（压缩前），gzip 后 POST `/api/telemetry/batch`；
+- 成功立刻按 id 删除，失败 `Result.retry()` 指数退避（初始 30 分钟）；401 直接结束本轮，等重新登录；
+- 「立即上传」走 `SyncService`（`dataSync` 前台服务），通知栏可见，同样只在 WiFi 下真正传输。
+
+**服务端**
+
+- `telemetry_events`：`event_time` 为 UTC 毫秒定长文本（字典序=时间序），配 `event_time`、`(kind,event_time)`、`(device_id,event_time)` 三条索引；
+- `telemetry_rollups`：`(bucket,kind,name)` 主键，存 `count/p50/p95`；
+- 聚合：每 10 分钟回补最近 3 个整点，`ON CONFLICT DO UPDATE` 幂等；百分位在 Go 侧用最近秩法算（SQLite 无 `percentile`）；
+- 清理：每天一次删除 90 天前明细，聚合永久保留；
+- 入口限制：压缩体 ≤ 2MB、解压后 ≤ 8MB、单批 ≤ 500 条、`DisallowUnknownFields`。
+
+**隐私红线**
+
+| 会上报 | 绝不上报 |
+|---|---|
+| 事件类型、耗时、状态码、章节序号 | 书籍正文、章节内容片段 |
+| 机型、系统版本、App 版本、设备 ID | 音频 PCM/密文、TTS 文本 |
+| 崩溃堆栈（可执行路径） | Token、Cookie、Authorization、密钥 |
+| 检索耗时与命中数 | 检索关键词原文 |
+
+接口层不读请求体之外的东西，网络埋点不读 body、不读 header、不记 query。
+
+### 19.5 接口
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| POST | `/api/telemetry/batch` | device token / session | gzip 批量上报，返回 `accepted/dropped` |
+| GET | `/api/admin/telemetry/overview?days=7` | 仅 session | 活跃设备、崩溃数、API/冷启动/TTS P95 |
+| GET | `/api/admin/telemetry/heatmap?days=7` | 仅 session | 机型 × 类型计数（Top 300） |
+| GET | `/api/admin/telemetry/slow-chapters?days=7` | 仅 session | 最慢章节 Top 20（均值/P95/峰值） |
+| GET | `/api/admin/telemetry/crashes?days=7&limit=50` | 仅 session | 崩溃 + ANR，含堆栈与上下文 |
+| GET | `/api/admin/telemetry/series?days=7&kind=API` | 仅 session | 小时聚合序列（趋势图） |
+
+device token 访问控制台接口统一 403（与其它 admin 接口一致），便于客户端区分「凭证无效」与「凭证类型不允许」。
+
+### 19.6 控制台「体验调优」
+
+- **KPI 四卡**：活跃设备（去重）、崩溃/ANR（按 occurrence 合并）、API P95、冷启动 P95；
+- **机型热力图**：行=机型（Top 10），列=事件类型（Top 8），透明度按该格计数 / 全局最大值映射；
+- **最慢章节**：名称、次数、均值、P95、峰值；
+- **崩溃列表**：`×N` 合并标识 + 机型/版本/时间，点击展开完整堆栈与上下文 JSON。
+
+### 19.7 测试与验收
+
+| 项目 | 结果 |
+|---|---|
+| Go：`go vet` / `gofmt` / `go test ./...` | 全绿（20 个包，含 `internal/telemetry`） |
+| Go：gzip 与清洗 | `TestTelemetryBatchAcceptsGzipAndSanitizes`：解压 2 条、正文与 token 未落库、`occurrence=3` 保留 |
+| Go：索引 | `TestAggregateQueryUsesIndex`：`EXPLAIN QUERY PLAN` 含 `USING INDEX` |
+| Go：聚合 | `TestAggregateHourProducesP50P95`：`[100..500]` → P50=300、P95=500，重跑幂等 |
+| Android：清洗与落盘 | `TelemetryRepositoryTest`：连续 10 次同异常 → 1 条 `count=10`；关闭驱动重开仍可读 |
+| Android：淘汰 | 1200 条普通事件后条数受控，1 小时前的崩溃未被淘汰 |
+| Android：分级策略 | `TelemetryWorkTest`：约束为 `UNMETERED` 且要求电量不低 |
+| Android：构建 | `:shared:testDebugUnitTest` **71 个用例 0 失败**（本阶段新增 15 个）、`:androidApp:assembleDebug` 成功 |
+
+真机手工验收（需自备设备）：
+
+1. 小米/华为：设置 → 系统保活 → 「自启动设置」能跳到对应页面；开启后锁屏朗读 10 分钟不中断；
+2. 断网 → 顶部出现红色横幅、预读停止；连回 WiFi → 横幅消失、下一章可秒开；
+3. 移动网络下触发预读 → 提示「已跳过预取」；
+4. 制造一次崩溃 → 重开 App → 设置页「其中崩溃」+1 → 连 WiFi 后条目归零；
+5. 控制台「体验调优」能看到该机型、崩溃堆栈与最慢章节。
+
+### 19.8 已知限制
+
+1. **ANR 看门狗是应用内近似**：进程被系统冻结时看门狗自己也停摆，真正的 ANR 仍以系统 `traces` 为准；这里捕捉的是「界面卡死但进程还活着」。
+2. **崩溃写入依赖 SQLCipher 可用**：若 Keystore 在崩溃瞬间不可用（极少数机型解锁前），该条会丢失；正常解锁状态下已验证可写。
+3. **淘汰是「近似 FIFO」**：按 50 条一批删除，最终条数可能落在 950–1000 之间，不会精确等于 1000。
+4. **热力图与 P95 是窗口内精确值**：`overview` 直接扫明细（上限 5 万行），超大数据量下应改为读 `telemetry_rollups`；私有站规模足够。
+5. **厂商页面可能变更**：ROM 升级会改组件名，跳转失败时统一降级到应用详情页，不保证每次都能直达开关。
+6. **遥测开关是编译期默认开启**：当前未在 UI 提供「完全关闭采集」的开关，只提供「清空本地」；如需合规开关，应在 `Telemetry.enabled` 上接一个设置项。

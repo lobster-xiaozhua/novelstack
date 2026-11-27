@@ -134,6 +134,21 @@ class NovelApi(
         return json.decodeFromString(LatestHash.serializer(), resp.textOrThrow())
     }
 
+    /**
+     * 上送遥测批次。body 已在平台层 gzip 压缩；服务端按 Content-Encoding 解压。
+     * 非 2xx 抛 ApiException，由 WorkManager 决定重试。
+     */
+    suspend fun uploadTelemetry(gzipBody: ByteArray) {
+        val resp = client.post("$baseUrl/api/telemetry/batch") {
+            auth()
+            contentType(ContentType.Application.Json)
+            header("Content-Encoding", "gzip")
+            setBody(gzipBody)
+        }
+        // 读空响应体，确保连接可复用；状态码由 textOrThrow 校验。
+        resp.textOrThrow()
+    }
+
     suspend fun audioManifest(bookId: String, chapterIndex: Int): AudioManifest {
         val resp = client.get("$baseUrl/api/books/$bookId/chapters/$chapterIndex/audio") { auth() }
         return json.decodeFromString(AudioManifest.serializer(), resp.textOrThrow())

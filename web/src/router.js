@@ -7,6 +7,7 @@ import Search from './views/Search.vue'
 import Audit from './views/Audit.vue'
 import Cache from './views/Cache.vue'
 import Devices from './views/Devices.vue'
+import Telemetry from './views/Telemetry.vue'
 
 const routes = [
   { path: '/', redirect: '/overview' },
@@ -17,6 +18,7 @@ const routes = [
   { path: '/audit', name: 'audit', component: Audit, meta: { title: '审计' } },
   { path: '/cache', name: 'cache', component: Cache, meta: { title: '缓存管理' } },
   { path: '/devices', name: 'devices', component: Devices, meta: { title: '设备与配对' } },
+  { path: '/telemetry', name: 'telemetry', component: Telemetry, meta: { title: '体验调优' } },
   { path: '/:pathMatch(.*)*', redirect: '/overview' },
 ]
 

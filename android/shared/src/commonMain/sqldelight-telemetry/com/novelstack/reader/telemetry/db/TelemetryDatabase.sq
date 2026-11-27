@@ -1,0 +1,74 @@
+-- 遥测队列（独立 SQLCipher 库 telemetry.db，与业务库 reader.db 物理隔离）。
+--
+-- 为什么独立库：
+--   1. 遥测写入发生在崩溃路径上，绝不能因为业务库锁竞争而丢数据；
+--   2. 清理/淘汰遥测时不会触碰书籍与进度；
+--   3. 用户「清除遥测」可以整库删除，语义干净。
+--
+-- 时间统一 epoch 毫秒，整数比较不依赖字符串格式。
+
+CREATE TABLE telemetry_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT    NOT NULL,
+    name        TEXT    NOT NULL DEFAULT '',
+    severity    TEXT    NOT NULL DEFAULT 'info',
+    ts          INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    stack       TEXT    NOT NULL DEFAULT '',
+    context     TEXT    NOT NULL DEFAULT '{}',
+    count       INTEGER NOT NULL DEFAULT 1,
+    fingerprint TEXT    NOT NULL,
+    bytes       INTEGER NOT NULL DEFAULT 0,
+    device_id   TEXT    NOT NULL DEFAULT '',
+    app_version TEXT    NOT NULL DEFAULT '',
+    os_version  TEXT    NOT NULL DEFAULT '',
+    model       TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_telemetry_ts ON telemetry_queue(ts);
+CREATE INDEX idx_telemetry_fp ON telemetry_queue(fingerprint, ts);
+
+insertEvent:
+INSERT INTO telemetry_queue
+    (kind, name, severity, ts, duration_ms, stack, context, count, fingerprint, bytes,
+     device_id, app_version, os_version, model)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+
+findRecentByFingerprint:
+SELECT * FROM telemetry_queue
+WHERE fingerprint = ? AND ts >= ?
+ORDER BY ts DESC
+LIMIT 1;
+
+bumpCount:
+UPDATE telemetry_queue SET count = count + ? WHERE id = ?;
+
+countRows:
+SELECT COUNT(*) FROM telemetry_queue;
+
+sumBytes:
+SELECT COALESCE(SUM(bytes), 0) FROM telemetry_queue;
+
+oldestEvictable:
+SELECT id FROM telemetry_queue
+WHERE (kind NOT IN ('CRASH', 'ANR') OR ts < ?)
+ORDER BY ts ASC
+LIMIT ?;
+
+deleteById:
+DELETE FROM telemetry_queue WHERE id = ?;
+
+selectBatch:
+SELECT * FROM telemetry_queue ORDER BY ts ASC LIMIT ?;
+
+selectAll:
+SELECT * FROM telemetry_queue ORDER BY ts ASC;
+
+deleteOlderThan:
+DELETE FROM telemetry_queue WHERE ts < ?;
+
+deleteAll:
+DELETE FROM telemetry_queue;
+
+countCrashes:
+SELECT COUNT(*) FROM telemetry_queue WHERE kind IN ('CRASH', 'ANR');

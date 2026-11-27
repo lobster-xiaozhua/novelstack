@@ -30,6 +30,7 @@ onMounted(async () => {
         <div class="group">内容</div>
         <router-link to="/tts"><i class="dot" />TTS 朗读</router-link>
         <router-link to="/search"><i class="dot" />搜索与覆盖度</router-link>
+        <router-link to="/telemetry"><i class="dot" />体验调优</router-link>
         <router-link to="/audit"><i class="dot" />审计</router-link>
 
         <div class="group">维护</div>

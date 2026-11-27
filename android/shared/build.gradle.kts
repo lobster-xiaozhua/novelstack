@@ -50,12 +50,17 @@ kotlin {
         commonTest.dependencies {
             implementation(kotlin("test"))
         }
+        // JVM 侧单测：用真实 SQLite 验证遥测队列的合并/淘汰/跨进程持久化。
+        androidUnitTest.dependencies {
+            implementation(libs.sqldelight.sqlite.driver)
+        }
         androidMain.dependencies {
             implementation(libs.ktor.client.okhttp)
             implementation(libs.koin.android)
             implementation(libs.sqldelight.android.driver)
             implementation(libs.androidx.sqlite)
             implementation(libs.androidx.core.ktx)
+            implementation(libs.androidx.work.runtime)
             implementation(libs.sqlcipher.android)
             implementation(libs.coroutines.android)
         }
@@ -90,6 +95,13 @@ sqldelight {
         create("ReaderDatabase") {
             packageName.set("com.novelstack.reader.db")
             // UPSERT 需要 SQLite 3.24+；默认的 3.18 方言会报 “',' expected, got 'ON'”。
+            dialect("app.cash.sqldelight:sqlite-3-38-dialect:${libs.versions.sqldelight.get()}")
+        }
+        // 第九阶段：遥测队列独立库。srcDirs 必须与业务库分开，
+        // 否则 SQLDelight 会把两个库的 .sq 混在同一个 schema 里。
+        create("TelemetryDatabase") {
+            packageName.set("com.novelstack.reader.telemetry.db")
+            srcDirs.setFrom("src/commonMain/sqldelight-telemetry")
             dialect("app.cash.sqldelight:sqlite-3-38-dialect:${libs.versions.sqldelight.get()}")
         }
     }

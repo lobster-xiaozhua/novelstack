@@ -12,13 +12,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
@@ -85,6 +89,14 @@ fun ReaderScreen(state: AppState, bookId: String) {
         modifier = Modifier
             .fillMaxSize()
             .background(palette.bg)
+            // 第九阶段：默认避开状态栏与挖孔；开启「隐藏刘海」后铺满，换取更宽的行宽。
+            .then(
+                if (settings.hideNotch) {
+                    Modifier
+                } else {
+                    Modifier.windowInsetsPadding(WindowInsets.displayCutout).statusBarsPadding()
+                },
+            )
             // 第八阶段：左右两侧 30% 区域内上下滑动调节亮度；中间区域不拦截，保持滚动。
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -404,6 +416,20 @@ private fun ReaderSettingsDialog(
                         }
                     }
                 }
+                Text("屏幕", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = { onChange(current.copy(hideNotch = !current.hideNotch)) }) {
+                        Text(
+                            (if (current.hideNotch) "• 已开启 " else "") + "隐藏刘海",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+                Text(
+                    if (current.hideNotch) "正文会铺到挖孔区域，边缘可能被遮挡。" else "自动避开状态栏与挖孔。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Text("朗读语速 ${fmt1(current.ttsSpeed)}x", style = MaterialTheme.typography.labelMedium)
                 Slider(
                     value = current.ttsSpeed,

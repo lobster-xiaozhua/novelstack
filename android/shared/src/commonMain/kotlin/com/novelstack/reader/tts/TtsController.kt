@@ -127,6 +127,9 @@ class TtsController(
         machine.send(PlaybackEvent.Play(bookId, chapterIndex))
 
         job = scope.launch(Dispatchers.Default) {
+            // 第九阶段：首帧耗时 = 点击播放 → 第一块 PCM 写入 AudioTrack。
+            // 只记时间，不含任何文本或音频内容。
+            val firstFrameStart = com.novelstack.reader.telemetry.Telemetry.now()
             try {
                 api.prepareAudio(bookId, chapterIndex, s)
                 val m: AudioManifest = api.audioManifest(bookId, chapterIndex)
@@ -174,6 +177,15 @@ class TtsController(
                             out.start(block.sampleRate, block.channels)
                             out.setSpeed(s)
                             started = true
+                            com.novelstack.reader.telemetry.Telemetry.record(
+                                kind = com.novelstack.reader.telemetry.TelemetryKind.TTS_FIRST_FRAME,
+                                name = "tts_first_frame",
+                                durationMs = com.novelstack.reader.telemetry.Telemetry.now() - firstFrameStart,
+                                context = mapOf(
+                                    "speed" to s.toString(),
+                                    "resume_segment" to resumeSegment.toString(),
+                                ),
+                            )
                         }
                         out.write(block.pcm)
                         zeroBytes(block.pcm)

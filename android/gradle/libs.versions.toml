@@ -13,6 +13,7 @@ sqlcipher = "4.6.1"
 androidxSqlite = "2.4.0"
 androidxMedia = "1.7.0"
 coreKtx = "1.13.1"
+work = "2.9.1"
 junit = "4.13.2"
 androidxTestJunit = "1.2.1"
 
@@ -31,6 +32,8 @@ sqldelight-runtime = { module = "app.cash.sqldelight:runtime", version.ref = "sq
 # SQLCipher 4.6 内置 SQLite 3.42，因此显式声明 3.38 方言。
 sqldelight-dialect = { module = "app.cash.sqldelight:sqlite-3-38-dialect", version.ref = "sqldelight" }
 sqldelight-android-driver = { module = "app.cash.sqldelight:android-driver", version.ref = "sqldelight" }
+# 仅测试用：JVM 上的 SQLite 实现，让遥测队列的合并/淘汰/持久化能用真实 SQL 验证。
+sqldelight-sqlite-driver = { module = "app.cash.sqldelight:sqlite-driver", version.ref = "sqldelight" }
 sqldelight-coroutines = { module = "app.cash.sqldelight:coroutines-extensions", version.ref = "sqldelight" }
 
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -40,6 +43,7 @@ datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "d
 
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activityCompose" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
+androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 androidx-media = { module = "androidx.media:media", version.ref = "androidxMedia" }
 androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "androidxSqlite" }
 sqlcipher-android = { module = "net.zetetic:sqlcipher-android", version.ref = "sqlcipher" }

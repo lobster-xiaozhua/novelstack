@@ -35,3 +35,11 @@
 # Ktor 的 IDE 调试探测引用 JVM 专有类（java.lang.management），Android 运行时没有：
 # 只关掉 R8 的 missing-class 告警，不引入这些类。
 -dontwarn java.lang.management.**
+
+# WorkManager 通过反射按类名实例化 Worker / WorkerFactory：
+# 混淆后类名变化会导致 "Could not instantiate ..." 运行时崩溃。
+-keep class com.novelstack.reader.telemetry.TelemetryUploadWorker { *; }
+-keep class com.novelstack.reader.telemetry.TelemetryCleanupWorker { *; }
+
+# 遥测库生成的 SQLDelight 接口（与业务库同样的理由）
+-keep class com.novelstack.reader.telemetry.db.** { *; }

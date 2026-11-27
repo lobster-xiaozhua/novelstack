@@ -29,6 +29,7 @@ import (
 	"novelstack/internal/ops"
 	"novelstack/internal/search"
 	"novelstack/internal/server"
+	"novelstack/internal/telemetry"
 	"novelstack/internal/tts"
 	"novelstack/internal/ttscache"
 )
@@ -56,6 +57,9 @@ type App struct {
 	Scheduler *backup.Scheduler
 	Health    *ops.HealthStore
 	Server    *server.Server
+	// Telemetry 是遥测明细/聚合存储；TelemetrySched 负责小时聚合与 90 天清理。
+	Telemetry      *telemetry.Store
+	TelemetrySched *telemetry.Scheduler
 }
 
 // New 构建完整应用；任何关键步骤失败都返回 error（由调用方决定退出）。
@@ -196,15 +200,23 @@ func New(ctx context.Context, opts Options) (*App, error) {
 		Webhook: cfg.AlertWebhook, Cooldown: cfg.AlertCooldown, Audit: a,
 	})
 
+	// ---- 第九阶段：遥测存储与小时聚合调度 ----
+	telStore := telemetry.NewStore(database)
+	telSched := telemetry.NewScheduler(telemetry.SchedulerOptions{
+		Store:     telStore,
+		Retention: 90 * 24 * time.Hour,
+	})
+
 	srv := server.New(server.Deps{
 		Config: cfg, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, DB: database,
-		Devices: devSvc, Health: health, Scheduler: sched,
+		Devices: devSvc, Health: health, Scheduler: sched, Telemetry: telStore,
 	})
 	return &App{
 		Cfg: cfg, DB: database, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, Devices: devSvc,
 		Scheduler: sched, Health: health, Server: srv,
+		Telemetry: telStore, TelemetrySched: telSched,
 	}, nil
 }
 
@@ -238,10 +250,13 @@ func warnAutoBackupPassphrase() {
 			"请设置 BACKUP_PASSPHRASE_FILE 或 NOVELSTACK_BACKUP_PASSPHRASE，详见 README §15.2。")
 }
 
-// StartBackground 启动后台 worker（每日备份调度器）；只在 serve 命令中调用。
+// StartBackground 启动后台 worker（每日备份调度器 + 遥测聚合）；只在 serve 命令中调用。
 func (a *App) StartBackground() {
 	if a.Scheduler != nil {
 		a.Scheduler.Start()
+	}
+	if a.TelemetrySched != nil {
+		a.TelemetrySched.Start()
 	}
 }
 
@@ -252,6 +267,9 @@ func (a *App) Handler() http.Handler { return a.Server.Handler() }
 func (a *App) Close() {
 	if a.Scheduler != nil {
 		a.Scheduler.Close()
+	}
+	if a.TelemetrySched != nil {
+		a.TelemetrySched.Close()
 	}
 	if a.Search != nil {
 		a.Search.Close()

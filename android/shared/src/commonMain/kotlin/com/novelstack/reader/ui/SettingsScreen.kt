@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
+import com.novelstack.reader.app.KeepAliveInfo
 import kotlinx.datetime.Clock
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -44,8 +46,15 @@ fun SettingsScreen(state: AppState) {
     val settings by state.settings.collectAsState()
     val lastSync by state.lastSyncAt.collectAsState()
     val update by state.update.collectAsState()
+    val telemetry by state.telemetryStats.collectAsState()
+    var keepAlive by remember { mutableStateOf<KeepAliveInfo?>(null) }
     var confirmWipe by remember { mutableStateOf(false) }
     var showUpdate by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        keepAlive = state.keepAliveInfo()
+        state.refreshTelemetryStats()
+    }
 
     Scaffold(
         topBar = {
@@ -114,6 +123,49 @@ fun SettingsScreen(state: AppState) {
             )
 
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("系统保活", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "国产 ROM 会主动清理后台，导致朗读或同步中断。建议完成下面两步：",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            InfoRow("机型", keepAlive?.deviceLabel ?: "—")
+            InfoRow("电池优化", if (keepAlive?.batteryIgnored == true) "已忽略（推荐）" else "未忽略")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    state.requestIgnoreBatteryOptimizations()
+                }) { Text("忽略电池优化") }
+                TextButton(onClick = {
+                    state.openAutostartSettings()
+                    keepAlive = state.keepAliveInfo()
+                }) { Text("自启动设置") }
+            }
+            keepAlive?.hint?.takeIf { it.isNotBlank() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("遥测与诊断", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "只上报运行状况、机型与耗时，绝不含书籍正文、音频和任何 Token。" +
+                    "数据先同步落盘到独立加密库，仅在 WiFi（不计量网络）下批量上传。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            val stats = telemetry
+            InfoRow("待上传", if (stats == null) "—" else "${stats.rows} 条 / ${formatBytes(stats.bytes)}")
+            InfoRow("其中崩溃", stats?.crashes?.toString() ?: "—")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    state.uploadTelemetryNow()
+                    state.refreshTelemetryStats()
+                }) { Text("立即上传") }
+                TextButton(onClick = {
+                    state.clearTelemetry()
+                }) { Text("清空本地遥测", color = MaterialTheme.colorScheme.error) }
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
             Text("危险操作", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
                 "清除本地 SQLCipher 数据库、Keystore 内的设备密钥与 device token。" +
@@ -127,8 +179,8 @@ fun SettingsScreen(state: AppState) {
 
             Spacer(Modifier.height(24.dp))
             Text(
-                "NovelStack Reader ${AppState.APP_VERSION} · 第八阶段\n" +
-                    "发现 / 足迹 / 收藏 / 应用内更新（测速 + 哈希校验）。",
+                "NovelStack Reader ${AppState.APP_VERSION} · 第九阶段\n" +
+                    "多机型保活 / 全链路遥测 / 发现 · 足迹 · 收藏 / 应用内更新。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

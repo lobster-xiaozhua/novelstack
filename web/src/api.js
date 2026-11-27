@@ -40,6 +40,27 @@ export const pruneCache = (body) =>
 
 export const getMe = () => request('/api/me')
 
+// 第九阶段：全链路遥测（只读聚合与明细）
+const telemetryQuery = (days) => {
+  const d = Number(days) || 7
+  return `days=${encodeURIComponent(d)}`
+}
+
+export const getTelemetryOverview = (days = 7) =>
+  request(`/api/admin/telemetry/overview?${telemetryQuery(days)}`)
+
+export const getTelemetryHeatmap = (days = 7) =>
+  request(`/api/admin/telemetry/heatmap?${telemetryQuery(days)}`)
+
+export const getTelemetrySlowChapters = (days = 7) =>
+  request(`/api/admin/telemetry/slow-chapters?${telemetryQuery(days)}`)
+
+export const getTelemetryCrashes = (days = 7, limit = 50) =>
+  request(`/api/admin/telemetry/crashes?${telemetryQuery(days)}&limit=${encodeURIComponent(limit)}`)
+
+export const getTelemetrySeries = (days = 7, kind = '') =>
+  request(`/api/admin/telemetry/series?${telemetryQuery(days)}${kind ? `&kind=${encodeURIComponent(kind)}` : ''}`)
+
 // 第五阶段：移动端设备与一次性配对码
 export const getDevices = () => request('/api/admin/devices')
 export const revokeDevice = (id) =>

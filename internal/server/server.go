@@ -22,6 +22,7 @@ import (
 	"novelstack/internal/mobile"
 	"novelstack/internal/ops"
 	"novelstack/internal/search"
+	"novelstack/internal/telemetry"
 	"novelstack/internal/tts"
 )
 
@@ -43,6 +44,8 @@ type Deps struct {
 	Scheduler interface {
 		RunOnce(ctx context.Context) (*backup.CreateResult, error)
 	}
+	// Telemetry 是遥测明细/聚合的查询与写入入口；为 nil 时相关接口返回 503。
+	Telemetry *telemetry.Store
 }
 
 // Server 持有全部依赖并暴露 http.Handler。
@@ -60,6 +63,7 @@ type Server struct {
 	prefetch  *mobile.Limiter
 	audioGen  *mobile.Limiter
 	health    *ops.HealthStore
+	telemetry *telemetry.Store
 	scheduler interface {
 		RunOnce(ctx context.Context) (*backup.CreateResult, error)
 	}
@@ -82,6 +86,7 @@ func New(d Deps) *Server {
 		prefetch:  mobile.NewLimiter(prefetchPerMinute(d.Config), 0),
 		audioGen:  mobile.NewLimiter(max(2, prefetchPerMinute(d.Config)/4), 0),
 		health:    d.Health,
+		telemetry: d.Telemetry,
 		scheduler: d.Scheduler,
 		mux:       http.NewServeMux(),
 	}
@@ -123,6 +128,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/books/{id}/favorite", s.requireAuth(s.handleFavoritePatch))
 	s.mux.HandleFunc("GET /api/app/version", s.requireAuth(s.handleAppVersion))
 	s.mux.HandleFunc("GET /api/app/version/latest-hash", s.requireAuth(s.handleAppLatestHash))
+
+	// 第九阶段：全链路遥测（客户端 device token 上报；控制台只读聚合与明细）。
+	s.mux.HandleFunc("POST /api/telemetry/batch", s.requireAuth(s.handleTelemetryBatch))
+	s.mux.HandleFunc("GET /api/admin/telemetry/overview", s.adminTelemetry(s.handleAdminTelemetryOverview))
+	s.mux.HandleFunc("GET /api/admin/telemetry/heatmap", s.adminTelemetry(s.handleAdminTelemetryHeatmap))
+	s.mux.HandleFunc("GET /api/admin/telemetry/slow-chapters", s.adminTelemetry(s.handleAdminTelemetrySlowChapters))
+	s.mux.HandleFunc("GET /api/admin/telemetry/crashes", s.adminTelemetry(s.handleAdminTelemetryCrashes))
+	s.mux.HandleFunc("GET /api/admin/telemetry/series", s.adminTelemetry(s.handleAdminTelemetrySeries))
 
 	// 书籍：读接口允许 device token；写接口只允许浏览器会话。
 	s.mux.HandleFunc("POST /api/books", s.requireSession(s.handleBookUpload))
@@ -228,6 +241,18 @@ func (s *Server) requireSession(next func(w http.ResponseWriter, r *http.Request
 			sessionID: shortHash(sess.TokenHash),
 		})
 	}
+}
+
+// adminTelemetry 给控制台遥测接口统一加「未装配则 503」的保护，
+// 避免每个 handler 重复判空。
+func (s *Server) adminTelemetry(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
+	return s.requireSession(func(w http.ResponseWriter, r *http.Request, _ identity) {
+		if s.telemetry == nil {
+			writeErr(w, http.StatusServiceUnavailable, "telemetry disabled")
+			return
+		}
+		next(w, r)
+	})
 }
 
 // lookupIdentity 先看浏览器 cookie，再看 Authorization: Bearer nsd_...。

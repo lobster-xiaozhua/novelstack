@@ -17,6 +17,8 @@ import com.novelstack.reader.net.NovelApi
 import com.novelstack.reader.platform.AudioSinkFactory
 import com.novelstack.reader.platform.DeviceKeyStore
 import com.novelstack.reader.platform.LocalDataWiper
+import com.novelstack.reader.telemetry.Telemetry
+import com.novelstack.reader.telemetry.TelemetryKind
 import com.novelstack.reader.tts.TtsController
 import com.novelstack.reader.update.AppUpdater
 import com.novelstack.reader.update.UpdatePlanner
@@ -51,6 +53,8 @@ data class ReaderSettings(
     val background: String = "dark",
     // 翻页：slide=平移(默认) / cover=覆盖 / scroll=上下滚动
     val pager: String = "slide",
+    // 第九阶段：隐藏刘海（阅读页绘制到挖孔区域，最大化可用宽度）
+    val hideNotch: Boolean = false,
     val ttsSpeed: Float = 1.0f,
 )
 
@@ -94,6 +98,10 @@ class AppState(
     private val json: Json,
     private val scope: CoroutineScope,
     private val appUpdater: AppUpdater? = null,
+    /** 第九阶段：系统保活引导（Android 实现；iOS 传 null）。 */
+    private val keepAlive: KeepAliveController? = null,
+    /** 第九阶段：遥测统计/清空/立即上传。 */
+    private val telemetryControl: TelemetryControl? = null,
 ) {
     private var store: ReaderRepository = storeFactory()
 
@@ -117,6 +125,14 @@ class AppState(
     /** 书架筛选：true=只看收藏。 */
     val favoritesOnly = MutableStateFlow(false)
     val update = MutableStateFlow(UpdateUiState())
+
+    // ---- 第九阶段：网络状态与遥测 ----
+    /** 供顶部横幅与预读开关使用；由平台 NetworkCallback 驱动。 */
+    val network = MutableStateFlow(NetworkStatus.Online)
+    val telemetryStats = MutableStateFlow<com.novelstack.reader.telemetry.TelemetryStats?>(null)
+
+    /** 只有不计量网络才允许预读/批量同步，避免偷跑流量。 */
+    val canPrefetch: Boolean get() = network.value == NetworkStatus.Online
 
     private var progressJob: Job? = null
 
@@ -171,6 +187,7 @@ class AppState(
         val token = store.kvGet("device_token")
         serverUrl.value = server ?: ""
         deviceId.value = store.kvGet("device_id") ?: ""
+        Telemetry.updateDeviceId(deviceId.value)
         if (server.isNullOrBlank() || token.isNullOrBlank()) {
             screen.value = Screen.Login
             return
@@ -229,6 +246,9 @@ class AppState(
                 store.kvPut("device_name", auth.device.name)
                 serverUrl.value = normal
                 deviceId.value = auth.device.id
+                // 遥测从此刻起带上设备标识（崩溃发生在登录前也能上传，只是 device_id 为空）。
+                Telemetry.updateDeviceId(auth.device.id)
+                Telemetry.requestUpload()
                 syncInternal()
                 screen.value = Screen.Library
             } catch (e: Throwable) {
@@ -359,6 +379,7 @@ class AppState(
     }
 
     private suspend fun loadChapter(bookId: String, index: Int, report: Boolean = true) {
+        val started = Telemetry.now()
         val meta = store.chaptersMeta(bookId)
         reader.value = reader.value.copy(
             chapters = meta, index = index, loading = true, message = null,
@@ -369,6 +390,7 @@ class AppState(
             reader.value = reader.value.copy(
                 title = cached.title, text = cached.text, fromCache = true, loading = false,
             )
+            recordSlowChapter(bookId, index, cached.title, Telemetry.now() - started, cached = true)
             if (report) reportProgress(bookId, index, 0, percentOf(meta.size, index))
             return
         }
@@ -379,6 +401,7 @@ class AppState(
             reader.value = reader.value.copy(
                 title = c.title, text = c.text, fromCache = false, loading = false,
             )
+            recordSlowChapter(bookId, index, c.title, Telemetry.now() - started, cached = false)
             if (report) reportProgress(bookId, index, 0, percentOf(meta.size, index))
         } catch (e: Throwable) {
             reader.value = reader.value.copy(
@@ -388,9 +411,29 @@ class AppState(
         }
     }
 
+    /** 解密 + 渲染 > 500ms 才上报，避免把正常章节灌进遥测。 */
+    private fun recordSlowChapter(bookId: String, index: Int, title: String, cost: Long, cached: Boolean) {
+        if (cost < 500) return
+        val bookTitle = reader.value.book?.title ?: bookId
+        Telemetry.record(
+            kind = TelemetryKind.SLOW_CHAPTER,
+            name = "$bookTitle·$title",
+            durationMs = cost,
+            context = mapOf(
+                "book_id" to bookId,
+                "chapter_index" to index.toString(),
+                "cached" to cached.toString(),
+            ),
+        )
+    }
+
     /** 预取当前章节之后的 3 章（离线阅读的核心动作）。 */
     fun prefetchAhead() {
         val bookId = (screen.value as? Screen.Reader)?.bookId ?: return
+        if (!canPrefetch) {
+            notice.value = "当前不是 WiFi，已跳过预取（避免消耗移动流量）"
+            return
+        }
         val r = reader.value
         val start = r.index
         val end = minOf(r.chapters.size, start + 3)
@@ -402,9 +445,20 @@ class AppState(
         }
         scope.launch {
             busy.value = true
+            val started = Telemetry.now()
             try {
                 prefetchInternal(bookId, need)
                 notice.value = "已缓存 ${need.size} 章（密文传输，本地解密）"
+                Telemetry.record(
+                    kind = TelemetryKind.PRELOAD_STATS,
+                    name = "manual_prefetch",
+                    durationMs = Telemetry.now() - started,
+                    context = mapOf(
+                        "book_id" to bookId,
+                        "chapters" to need.size.toString(),
+                        "trigger" to "manual",
+                    ),
+                )
             } catch (e: Throwable) {
                 error.value = friendly(e)
             } finally {
@@ -539,12 +593,26 @@ class AppState(
      */
     fun prefetchNextChapter() {
         val bookId = (screen.value as? Screen.Reader)?.bookId ?: return
+        // 静默预读只在 WiFi 下进行：移动网络下直接放弃，不打扰用户。
+        if (!canPrefetch) return
         val r = reader.value
         val next = r.index + 1
         if (next >= r.chapters.size) return
         if (r.chapters.getOrNull(next)?.cached == true) return
         scope.launch {
-            runCatching { prefetchInternal(bookId, listOf(next)) }
+            val started = Telemetry.now()
+            runCatching { prefetchInternal(bookId, listOf(next)) }.onSuccess {
+                Telemetry.record(
+                    kind = TelemetryKind.PRELOAD_STATS,
+                    name = "auto_prefetch",
+                    durationMs = Telemetry.now() - started,
+                    context = mapOf(
+                        "book_id" to bookId,
+                        "chapter_index" to next.toString(),
+                        "trigger" to "scroll80",
+                    ),
+                )
+            }
         }
     }
 
@@ -610,8 +678,82 @@ class AppState(
 
     fun search(query: String) {
         scope.launch {
-            searchResults.value = store.search(query)
+            val started = Telemetry.now()
+            val hits = store.search(query)
+            searchResults.value = hits
+            Telemetry.record(
+                kind = TelemetryKind.SEARCH_STATS,
+                name = "local_search",
+                durationMs = Telemetry.now() - started,
+                context = mapOf("query_len" to query.length.toString(), "hits" to hits.size.toString()),
+            )
         }
+    }
+
+    // ---- 第九阶段：网络与遥测 ----
+
+    /**
+     * 网络切换回调（平台层调用）。
+     *
+     * 语义：
+     *  - 断网/移动网络 → 立即停掉预读与同步，横幅提示；
+     *  - 回到 WiFi → 恢复并顺便触发一次遥测上传（WorkManager 仍受 UNMETERED 约束）。
+     */
+    fun onNetworkChanged(status: NetworkStatus) {
+        val prev = network.value
+        if (prev == status) return
+        network.value = status
+        notice.value = when (status) {
+            NetworkStatus.Online ->
+                if (prev == NetworkStatus.Offline) "网络已恢复，预读与同步继续" else null
+            NetworkStatus.Metered -> "已切到移动网络：预读与遥测上传已暂停（省流量）"
+            NetworkStatus.Offline -> "网络已断开：预读与同步已暂停"
+        }
+        if (status == NetworkStatus.Online) {
+            Telemetry.requestUpload()
+        }
+    }
+
+    fun refreshTelemetryStats() {
+        val c = telemetryControl ?: return
+        runCatching { telemetryStats.value = c.stats() }
+    }
+
+    fun clearTelemetry() {
+        val c = telemetryControl ?: return
+        runCatching { c.clear() }
+        refreshTelemetryStats()
+        notice.value = "本地遥测已清空"
+    }
+
+    /** 「立即上传」：走 dataSync 前台服务，仅 WiFi 下真正传输。 */
+    fun uploadTelemetryNow() {
+        val c = telemetryControl ?: return
+        if (!canPrefetch) {
+            notice.value = "当前不是 WiFi，已跳过上传（遥测只在 WiFi 下传输）"
+            return
+        }
+        runCatching { c.uploadNow() }
+        notice.value = "已加入上传队列"
+    }
+
+    // ---- 系统保活 ----
+
+    fun keepAliveInfo(): KeepAliveInfo? = keepAlive?.let {
+        KeepAliveInfo(
+            deviceLabel = it.deviceLabel(),
+            batteryIgnored = it.batteryOptimizationIgnored(),
+            hint = it.vendorHint(),
+        )
+    }
+
+    fun requestIgnoreBatteryOptimizations() {
+        keepAlive?.requestIgnoreBatteryOptimizations()
+    }
+
+    fun openAutostartSettings() {
+        val opened = keepAlive?.openAutostartSettings() ?: return
+        notice.value = if (opened) null else "未找到厂商自启动页，已打开应用详情，请手动允许自启动"
     }
 
     // ---- 退出并清除 ----

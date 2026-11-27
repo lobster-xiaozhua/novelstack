@@ -34,6 +34,7 @@ import (
 	"novelstack/internal/ops"
 	"novelstack/internal/search"
 	"novelstack/internal/server"
+	"novelstack/internal/telemetry"
 	"novelstack/internal/tts"
 	"novelstack/internal/ttscache"
 )
@@ -176,6 +177,7 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		Config: cfg, Sessions: sessions, Books: bookSvc, TTS: ttsSvc,
 		Search: searchSvc, Legado: legadoSvc, Audit: a, DB: database,
 		Devices: devices.NewStore(database), Health: health, Scheduler: sched,
+		Telemetry: telemetry.NewStore(database),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	cleanup(ts.Close)

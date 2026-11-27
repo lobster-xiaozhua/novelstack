@@ -315,6 +315,47 @@ CREATE TABLE IF NOT EXISTS user_bookmarks (
 CREATE INDEX IF NOT EXISTS idx_user_bookmarks_fav ON user_bookmarks(owner_id, is_favorite);
 `,
 	},
+	{
+		Version: 8,
+		SQL: `
+-- 第九阶段：客户端全链路遥测。
+-- 明细表只存运行状况/设备信息/耗时，禁止正文、音频与凭证（入口与库两层防护）。
+-- event_time 为客户端事件时间（UTC 毫秒、定长 TEXT），字典序即时间序，区间查询可走索引。
+CREATE TABLE IF NOT EXISTS telemetry_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id    TEXT NOT NULL,
+    owner_id     TEXT NOT NULL DEFAULT '',
+    kind         TEXT NOT NULL,
+    name         TEXT NOT NULL DEFAULT '',
+    severity     TEXT NOT NULL DEFAULT 'info',
+    event_time   TEXT NOT NULL,
+    received_at  TEXT NOT NULL,
+    app_version  TEXT NOT NULL DEFAULT '',
+    os_version   TEXT NOT NULL DEFAULT '',
+    model        TEXT NOT NULL DEFAULT '',
+    duration_ms  INTEGER NOT NULL DEFAULT 0,
+    stack        TEXT NOT NULL DEFAULT '',
+    context_json TEXT NOT NULL DEFAULT '{}',
+    occurrence   INTEGER NOT NULL DEFAULT 1
+);
+-- 控制台的三个主查询分别是「按时间窗口」「按类型+时间」「按设备」，各配一条索引。
+CREATE INDEX IF NOT EXISTS idx_telemetry_events_time ON telemetry_events(event_time);
+CREATE INDEX IF NOT EXISTS idx_telemetry_events_kind_time ON telemetry_events(kind, event_time);
+CREATE INDEX IF NOT EXISTS idx_telemetry_events_device ON telemetry_events(device_id, event_time);
+
+-- 每小时聚合（P50/P95）。明细 90 天后清理，聚合永久保留。
+CREATE TABLE IF NOT EXISTS telemetry_rollups (
+    bucket   TEXT NOT NULL,
+    kind     TEXT NOT NULL,
+    name     TEXT NOT NULL DEFAULT '',
+    count    INTEGER NOT NULL,
+    p50_ms   INTEGER NOT NULL,
+    p95_ms   INTEGER NOT NULL,
+    PRIMARY KEY (bucket, kind, name)
+);
+CREATE INDEX IF NOT EXISTS idx_telemetry_rollups_kind ON telemetry_rollups(kind, bucket);
+`,
+	},
 }
 
 // Open 打开（必要时创建）SQLite 数据库，启用 WAL 与 busy_timeout，并执行迁移。
