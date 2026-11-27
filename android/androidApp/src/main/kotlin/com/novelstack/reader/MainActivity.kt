@@ -20,6 +20,11 @@ class MainActivity : ComponentActivity() {
         // 开始朗读时先拉起前台服务（保证切后台/锁屏不被杀）；服务内部再控制播放。
         state.onPlaybackStarted = { PlaybackService.start(this) }
 
+        // 第八阶段：阅读页左右侧上下滑动调节系统亮度（作用于本 Activity 窗口）。
+        state.onBrightnessChange = { value ->
+            window.attributes = window.attributes.apply { screenBrightness = value }
+        }
+
         // Android 13+ 通知权限：媒体通知需要用户授权。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=

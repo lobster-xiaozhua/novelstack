@@ -1,5 +1,8 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
+// 与 androidApp 同源：CI 打 tag 时由 NOVELSTACK_VERSION 注入，本地构建回落到 0.1.0。
+val sharedVersionName = System.getenv("NOVELSTACK_VERSION")?.takeIf { it.isNotBlank() } ?: "0.1.0"
+
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.library)
@@ -52,6 +55,7 @@ kotlin {
             implementation(libs.koin.android)
             implementation(libs.sqldelight.android.driver)
             implementation(libs.androidx.sqlite)
+            implementation(libs.androidx.core.ktx)
             implementation(libs.sqlcipher.android)
             implementation(libs.coroutines.android)
         }
@@ -68,6 +72,12 @@ android {
     compileSdk = 35
     defaultConfig {
         minSdk = 26
+        // 版本号与 androidApp 的 versionName 同源：CI 由 tag 推导后经环境变量注入，
+        // 客户端据此自报版本，避免打包后仍报旧版本导致重复提示更新。
+        buildConfigField("String", "APP_VERSION", "\"$sharedVersionName\"")
+    }
+    buildFeatures {
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

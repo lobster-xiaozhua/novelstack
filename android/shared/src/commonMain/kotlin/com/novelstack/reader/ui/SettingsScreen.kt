@@ -8,11 +8,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -25,11 +29,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
-import com.novelstack.reader.app.Screen
 import kotlinx.datetime.Clock
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -39,16 +43,13 @@ fun SettingsScreen(state: AppState) {
     val device by state.deviceId.collectAsState()
     val settings by state.settings.collectAsState()
     val lastSync by state.lastSyncAt.collectAsState()
+    val update by state.update.collectAsState()
     var confirmWipe by remember { mutableStateOf(false) }
+    var showUpdate by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text("设置") },
-                navigationIcon = {
-                    TextButton(onClick = { state.screen.value = Screen.Library }) { Text("‹ 书库") }
-                },
-            )
+            TopAppBar(title = { Text("设置") })
         },
     ) { pad ->
         Column(
@@ -93,6 +94,26 @@ fun SettingsScreen(state: AppState) {
             )
 
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            Text("应用更新", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+            InfoRow("当前版本", AppState.APP_VERSION)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = {
+                    state.checkUpdate()
+                    showUpdate = true
+                }) { Text("检查更新") }
+                if (update.checking) {
+                    Spacer(Modifier.width(8.dp))
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                }
+            }
+            Text(
+                "下载会并发对多镜像测速（各取前 100KB），选最快者；完成后校验 SHA-256，" +
+                    "通过才唤起系统安装器（FileProvider）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
             Text("危险操作", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
                 "清除本地 SQLCipher 数据库、Keystore 内的设备密钥与 device token。" +
@@ -106,8 +127,8 @@ fun SettingsScreen(state: AppState) {
 
             Spacer(Modifier.height(24.dp))
             Text(
-                "NovelStack Reader 0.1.0 · 第五阶段（路线 B）\n" +
-                    "iOS 仅保留 target 与接口，本阶段未验收。",
+                "NovelStack Reader ${AppState.APP_VERSION} · 第八阶段\n" +
+                    "发现 / 足迹 / 收藏 / 应用内更新（测速 + 哈希校验）。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -126,6 +147,70 @@ fun SettingsScreen(state: AppState) {
                 }) { Text("清除", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("取消") } },
+        )
+    }
+
+    if (showUpdate) {
+        AlertDialog(
+            onDismissRequest = { showUpdate = false },
+            title = {
+                val title = when {
+                    update.checking -> "检查更新"
+                    update.hasUpdate -> "发现新版本 ${update.info?.version ?: ""}"
+                    else -> "检查更新"
+                }
+                Text(title)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (update.checking) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                            Text("正在检查…", style = MaterialTheme.typography.bodySmall)
+                        }
+                    } else {
+                        update.message?.let {
+                            Text(it, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        update.info?.changelog?.takeIf { it.isNotBlank() }?.let {
+                            Text("更新说明：", style = MaterialTheme.typography.labelMedium)
+                            Text(it, style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (update.hasUpdate) {
+                            val mirrors = update.info?.mirrors ?: emptyList()
+                            Text(
+                                if (mirrors.isEmpty()) "服务端未配置镜像，暂时无法下载。"
+                                else "可用镜像 ${mirrors.size} 个",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    if (update.downloading) {
+                        LinearProgressIndicator(
+                            progress = { update.progress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "下载中 ${(update.progress * 100).toInt()}%",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (update.hasUpdate && !update.downloading) {
+                    TextButton(onClick = { state.downloadUpdate() }) { Text("下载并安装") }
+                } else {
+                    TextButton(onClick = { showUpdate = false }) { Text("关闭") }
+                }
+            },
+            dismissButton = {
+                if (update.hasUpdate && !update.downloading) {
+                    TextButton(onClick = { showUpdate = false }) { Text("取消") }
+                }
+            },
         )
     }
 }

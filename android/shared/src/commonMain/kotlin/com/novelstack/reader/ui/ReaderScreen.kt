@@ -3,6 +3,10 @@ package com.novelstack.reader.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -40,13 +45,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineBreak
+import androidx.compose.ui.text.style.TextIndent
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.novelstack.reader.app.AppState
 import com.novelstack.reader.app.ReaderSettings
 import com.novelstack.reader.app.Screen
+import com.novelstack.reader.reading.Kinsoku
+import com.novelstack.reader.reading.PrefetchGate
 import com.novelstack.reader.tts.SleepMode
 import com.novelstack.reader.tts.TtsController
 
@@ -55,24 +67,48 @@ fun ReaderScreen(state: AppState, bookId: String) {
     val r by state.reader.collectAsState()
     val settings by state.settings.collectAsState()
     val tts by state.tts.state.collectAsState()
-    val palette = readerPalette(settings.background)
+    val books by state.books.collectAsState()
+    val systemDark = isSystemInDarkTheme()
+    val palette = readerPaletteFor(settings.theme, systemDark)
+    val favorite = books.firstOrNull { it.id == bookId }?.is_favorite != 0L
 
     var showToc by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    // 亮度本地状态：左右边缘上下滑时更新，交由平台层写入 Window。
+    var brightness by remember { mutableFloatStateOf(0.7f) }
 
-    // 从搜索/其他入口进入时，如果当前状态不是这本书，主动打开。
     LaunchedEffect(bookId) {
         if (r.book?.id != bookId) state.openBook(bookId)
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(palette.bg)) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.bg)
+            // 第八阶段：左右两侧 30% 区域内上下滑动调节亮度；中间区域不拦截，保持滚动。
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val w = size.width.toFloat()
+                    val x = down.position.x
+                    val edge = x < w * 0.3f || x > w * 0.7f
+                    if (!edge) return@awaitEachGesture
+                    drag(down.id) { change ->
+                        val dy = change.positionChange().y
+                        brightness = (brightness - dy / size.height * 0.6f).coerceIn(0.05f, 1f)
+                        state.setScreenBrightness(brightness)
+                        change.consume()
+                    }
+                }
+            },
+    ) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextButton(onClick = { state.screen.value = Screen.Library }) {
-                    Text("‹ 书库", color = palette.dim)
+                    Text("‹ 书架", color = palette.dim)
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -90,17 +126,15 @@ fun ReaderScreen(state: AppState, bookId: String) {
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
+                TextButton(onClick = { state.toggleFavorite(bookId) }) {
+                    Text(if (favorite) "♥" else "♡", color = if (favorite) Color(0xFFE08A8A) else palette.dim)
+                }
                 TextButton(onClick = { showToc = true }) { Text("目录", color = palette.dim) }
                 TextButton(onClick = { showSettings = true }) { Text("Aa", color = palette.dim) }
             }
 
             if (settings.pager == "scroll") {
-                ChapterBody(
-                    state = state,
-                    palette = palette,
-                    settings = settings,
-                    modifier = Modifier.weight(1f),
-                )
+                ChapterBody(state, palette, settings, Modifier.weight(1f))
             } else {
                 val pageCount = maxOf(1, r.chapters.size)
                 val pager = rememberPagerState(initialPage = r.index.coerceIn(0, pageCount - 1)) {
@@ -113,26 +147,30 @@ fun ReaderScreen(state: AppState, bookId: String) {
                     if (pager.currentPage != r.index) state.goChapter(pager.currentPage)
                 }
                 HorizontalPager(state = pager, modifier = Modifier.weight(1f)) { page ->
-                    if (page == r.index) {
-                        ChapterBody(
-                            state = state,
-                            palette = palette,
-                            settings = settings,
-                            modifier = Modifier.fillMaxSize(),
-                        )
+                    // 覆盖模式：被翻走的页轻微后退形成层次；平移模式保持默认跟手。
+                    val offset = (pager.currentPage - page) + pager.currentPageOffsetFraction
+                    val pageMod = if (settings.pager == "cover") {
+                        Modifier.graphicsLayer { translationX = -offset * size.width * 0.18f }
                     } else {
-                        Column(
-                            modifier = Modifier.fillMaxSize().padding(24.dp),
-                            verticalArrangement = Arrangement.Center,
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Text(
-                                r.chapters.getOrNull(page)?.title ?: "第 ${page + 1} 章",
-                                color = palette.dim,
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Spacer(Modifier.height(8.dp))
-                            Text("松手后加载", color = palette.dim, style = MaterialTheme.typography.bodySmall)
+                        Modifier
+                    }
+                    Box(pageMod) {
+                        if (page == r.index) {
+                            ChapterBody(state, palette, settings, Modifier.fillMaxSize())
+                        } else {
+                            Column(
+                                modifier = Modifier.fillMaxSize().padding(24.dp),
+                                verticalArrangement = Arrangement.Center,
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text(
+                                    r.chapters.getOrNull(page)?.title ?: "第 ${page + 1} 章",
+                                    color = palette.dim,
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                Text("松手后加载", color = palette.dim, style = MaterialTheme.typography.bodySmall)
+                            }
                         }
                     }
                 }
@@ -248,12 +286,25 @@ fun ReaderScreen(state: AppState, bookId: String) {
 @Composable
 private fun ChapterBody(
     state: AppState,
-    palette: com.novelstack.reader.ui.ReaderPalette,
+    palette: ReaderPalette,
     settings: ReaderSettings,
     modifier: Modifier = Modifier,
 ) {
     val r by state.reader.collectAsState()
     val scroll = rememberScrollState()
+    val gate = remember { PrefetchGate(0.8f) }
+
+    // 第八阶段：滚动进度超过 80% 时，静默预拉下一章（每章仅触发一次）。
+    LaunchedEffect(scroll.value, scroll.maxValue, r.index) {
+        if (scroll.maxValue > 0) {
+            val progress = scroll.value.toFloat() / scroll.maxValue
+            val hasNext = r.index < r.chapters.size - 1
+            if (gate.shouldTrigger(r.index, progress, hasNext)) {
+                state.prefetchNextChapter()
+            }
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -273,10 +324,15 @@ private fun ChapterBody(
             modifier = Modifier.padding(bottom = 14.dp),
         )
         Text(
-            r.text,
+            // 避头尾近似：在禁则标点前插入 word joiner；首行缩进 2 字符；段落断行策略。
+            Kinsoku.apply(r.text),
             color = palette.fg,
-            fontSize = settings.fontSize.sp,
-            lineHeight = (settings.fontSize * settings.lineHeight).sp,
+            style = MaterialTheme.typography.bodyLarge.copy(
+                fontSize = settings.fontSize.sp,
+                lineHeight = (settings.fontSize * settings.lineHeight).sp,
+                textIndent = TextIndent(firstLine = (settings.fontSize * 2).sp),
+                lineBreak = LineBreak.Paragraph,
+            ),
         )
         r.message?.let {
             Spacer(Modifier.height(16.dp))
@@ -317,32 +373,35 @@ private fun ReaderSettingsDialog(
                     valueRange = 1.3f..2.2f,
                     steps = 8,
                 )
-                Text("背景", style = MaterialTheme.typography.labelMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    listOf("dark" to Color(0xFF0D1117), "paper" to Color(0xFFF7F2E8),
-                        "sepia" to Color(0xFFEFE2CC), "mint" to Color(0xFFE4F0E8)).forEach { (key, color) ->
-                        Box(
-                            modifier = Modifier
-                                .size(30.dp)
-                                .clip(CircleShape)
-                                .background(color)
-                                .border(
-                                    width = if (current.background == key) 3.dp else 1.dp,
-                                    color = if (current.background == key) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.outline,
-                                    shape = CircleShape,
-                                )
-                                .clickable { onChange(current.copy(background = key)) },
-                        )
+                Text("主题", style = MaterialTheme.typography.labelMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "auto" to "跟随系统",
+                        "light" to "白天",
+                        "dark" to "夜间",
+                        "eye" to "护眼",
+                    ).forEach { (key, label) ->
+                        TextButton(onClick = { onChange(current.copy(theme = key)) }) {
+                            Text(
+                                (if (current.theme == key) "• " else "") + label,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
                     }
                 }
                 Text("翻页", style = MaterialTheme.typography.labelMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { onChange(current.copy(pager = "slide")) }) {
-                        Text(if (current.pager == "slide") "• 左右滑动" else "左右滑动")
-                    }
-                    TextButton(onClick = { onChange(current.copy(pager = "scroll")) }) {
-                        Text(if (current.pager == "scroll") "• 上下滚动" else "上下滚动")
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(
+                        "slide" to "平移",
+                        "cover" to "覆盖",
+                        "scroll" to "滚动",
+                    ).forEach { (key, label) ->
+                        TextButton(onClick = { onChange(current.copy(pager = key)) }) {
+                            Text(
+                                (if (current.pager == key) "• " else "") + label,
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
                     }
                 }
                 Text("朗读语速 ${fmt1(current.ttsSpeed)}x", style = MaterialTheme.typography.labelMedium)
@@ -366,7 +425,7 @@ private fun ReaderSettingsDialog(
 private fun PlaybackPanel(
     state: AppState,
     tts: TtsController.State,
-    palette: com.novelstack.reader.ui.ReaderPalette,
+    palette: ReaderPalette,
 ) {
     var showSleep by remember { mutableStateOf(false) }
     var showSpeed by remember { mutableStateOf(false) }
@@ -376,7 +435,6 @@ private fun PlaybackPanel(
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp),
     ) {
-        // 进度行：片段进度 + 定时倒计时（仅元数据）
         Row(verticalAlignment = Alignment.CenterVertically) {
             val progress = if (tts.total > 0) tts.segment.toFloat() / tts.total else 0f
             LinearProgressIndicator(
@@ -424,7 +482,7 @@ private fun PlaybackPanel(
                         value = state.tts.state.value.speed,
                         onValueChange = { state.tts.setSpeed(it) },
                         valueRange = 0.5f..2.0f,
-                        steps = 5, // 0.5, 0.75, 1.0 ... 2.0
+                        steps = 5,
                     )
                     Text(
                         "客户端变速（AudioTrack time-stretch），不重新合成、不联网。",

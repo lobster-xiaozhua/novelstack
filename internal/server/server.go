@@ -117,6 +117,13 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /api/books/{id}/chapters/{index}/audio/prepare", s.requireAuth(s.handleAudioPrepare))
 	s.mux.HandleFunc("GET /api/tts/segments/{key}", s.requireAuth(s.handleAudioSegment))
 
+	// 第八阶段：客户端体验与书库运营（只读元数据/进度，不含正文）。
+	s.mux.HandleFunc("GET /api/discover", s.requireAuth(s.handleDiscover))
+	s.mux.HandleFunc("GET /api/history", s.requireAuth(s.handleHistory))
+	s.mux.HandleFunc("PATCH /api/books/{id}/favorite", s.requireAuth(s.handleFavoritePatch))
+	s.mux.HandleFunc("GET /api/app/version", s.requireAuth(s.handleAppVersion))
+	s.mux.HandleFunc("GET /api/app/version/latest-hash", s.requireAuth(s.handleAppLatestHash))
+
 	// 书籍：读接口允许 device token；写接口只允许浏览器会话。
 	s.mux.HandleFunc("POST /api/books", s.requireSession(s.handleBookUpload))
 	s.mux.HandleFunc("GET /api/books", s.requireAuth(s.handleBookList))

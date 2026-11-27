@@ -8,6 +8,9 @@ import com.novelstack.reader.db.ReaderRepository
 import com.novelstack.reader.db.SearchHit
 import com.novelstack.reader.model.BookChange
 import com.novelstack.reader.model.ApiException
+import com.novelstack.reader.model.AppVersion
+import com.novelstack.reader.model.DiscoverResponse
+import com.novelstack.reader.model.HistoryItem
 import com.novelstack.reader.model.LoginRequest
 import com.novelstack.reader.model.ProgressRequest
 import com.novelstack.reader.net.NovelApi
@@ -15,6 +18,8 @@ import com.novelstack.reader.platform.AudioSinkFactory
 import com.novelstack.reader.platform.DeviceKeyStore
 import com.novelstack.reader.platform.LocalDataWiper
 import com.novelstack.reader.tts.TtsController
+import com.novelstack.reader.update.AppUpdater
+import com.novelstack.reader.update.UpdatePlanner
 import io.ktor.util.decodeBase64Bytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -29,6 +34,8 @@ import kotlinx.serialization.json.Json
 sealed interface Screen {
     data object Login : Screen
     data object Library : Screen
+    data object Discover : Screen
+    data object History : Screen
     data object Search : Screen
     data object Settings : Screen
     data class Reader(val bookId: String) : Screen
@@ -38,9 +45,24 @@ sealed interface Screen {
 data class ReaderSettings(
     val fontSize: Float = 18f,
     val lineHeight: Float = 1.7f,
-    val background: String = "dark", // dark / paper / sepia / mint
-    val pager: String = "slide", // slide / scroll
+    // 第八阶段：四主题。auto=跟随系统 / light=白天 / dark=夜间 / eye=护眼(黄底)
+    val theme: String = "auto",
+    // 兼容旧版字段：theme 未覆盖时作为回退纸张色（dark/paper/sepia/mint）
+    val background: String = "dark",
+    // 翻页：slide=平移(默认) / cover=覆盖 / scroll=上下滚动
+    val pager: String = "slide",
     val ttsSpeed: Float = 1.0f,
+)
+
+/** 检查更新 UI 状态（只含版本元数据与下载进度，不含 APK 字节）。 */
+data class UpdateUiState(
+    val checking: Boolean = false,
+    val info: AppVersion? = null,
+    val hasUpdate: Boolean = false,
+    val downloading: Boolean = false,
+    val progress: Float = 0f,
+    val message: String? = null,
+    val readyToInstall: String? = null,
 )
 
 data class ReaderUiState(
@@ -71,6 +93,7 @@ class AppState(
     sinkFactory: AudioSinkFactory,
     private val json: Json,
     private val scope: CoroutineScope,
+    private val appUpdater: AppUpdater? = null,
 ) {
     private var store: ReaderRepository = storeFactory()
 
@@ -88,6 +111,13 @@ class AppState(
     val settings = MutableStateFlow(loadSettings())
     val tts = TtsController(api, keyStore, sinkFactory, scope)
 
+    // ---- 第八阶段：发现 / 足迹 / 收藏 / 更新 ----
+    val discover = MutableStateFlow<DiscoverResponse?>(null)
+    val history = MutableStateFlow<List<HistoryItem>>(emptyList())
+    /** 书架筛选：true=只看收藏。 */
+    val favoritesOnly = MutableStateFlow(false)
+    val update = MutableStateFlow(UpdateUiState())
+
     private var progressJob: Job? = null
 
     /**
@@ -95,6 +125,9 @@ class AppState(
      * 拉起前台服务。commonMain 不引用任何 Android 类型。
      */
     var onPlaybackStarted: (() -> Unit)? = null
+
+    /** 亮度调节钩子：由 Android 平台层设置（android.view.Window#screenBrightness）。 */
+    var onBrightnessChange: ((Float) -> Unit)? = null
 
     /** UI 统一入口：先通知平台拉起前台服务，再开始朗读。 */
     fun ttsStart(bookId: String, chapterIndex: Int, speed: Float, fromSegment: Int = 0) {
@@ -450,6 +483,129 @@ class AppState(
         }
     }
 
+    // ---- 第八阶段：发现 / 足迹 / 收藏 / 更新 / 亮度 / 预读 ----
+
+    fun loadDiscover() {
+        scope.launch {
+            try {
+                discover.value = api.discover()
+            } catch (e: Throwable) {
+                error.value = friendly(e)
+            }
+        }
+    }
+
+    fun loadHistory() {
+        scope.launch {
+            try {
+                history.value = api.history().items
+            } catch (e: Throwable) {
+                error.value = friendly(e)
+            }
+        }
+    }
+
+    /**
+     * 切换收藏：先乐观更新本地库并刷新书架，再向服务端确认；
+     * 失败则回滚本地并提示。全程只动元数据与 is_favorite，不触碰正文。
+     */
+    fun toggleFavorite(bookId: String) {
+        val next = !store.isFavorite(bookId)
+        store.setFavorite(bookId, next)
+        books.value = store.listBooks()
+        scope.launch {
+            try {
+                val confirmed = api.setFavorite(bookId, next)
+                if (confirmed != next) {
+                    store.setFavorite(bookId, confirmed)
+                    books.value = store.listBooks()
+                }
+            } catch (e: Throwable) {
+                store.setFavorite(bookId, !next)
+                books.value = store.listBooks()
+                error.value = "收藏失败：${friendly(e)}"
+            }
+        }
+    }
+
+    /** 调节系统亮度（由平台层实现；commonMain 不引用 Android Window）。 */
+    fun setScreenBrightness(value: Float) {
+        onBrightnessChange?.invoke(value.coerceIn(0.05f, 1f))
+    }
+
+    /**
+     * 章节预读：当前进度超过 80% 时，静默把下一章密文拉回并解密写入 SQLCipher。
+     * 失败一律静默（弱网下不应打扰阅读）；已缓存则直接返回。
+     */
+    fun prefetchNextChapter() {
+        val bookId = (screen.value as? Screen.Reader)?.bookId ?: return
+        val r = reader.value
+        val next = r.index + 1
+        if (next >= r.chapters.size) return
+        if (r.chapters.getOrNull(next)?.cached == true) return
+        scope.launch {
+            runCatching { prefetchInternal(bookId, listOf(next)) }
+        }
+    }
+
+    /** 检查更新：拉取版本与说明，比较版本号。 */
+    fun checkUpdate() {
+        val u = update.value
+        if (u.checking || u.downloading) return
+        update.value = u.copy(checking = true, message = null, readyToInstall = null)
+        scope.launch {
+            try {
+                val info = api.appVersion()
+                val has = UpdatePlanner.isNewer(info.version, APP_VERSION)
+                update.value = update.value.copy(
+                    checking = false, info = info, hasUpdate = has,
+                    message = if (has) null else "已是最新版本 ${info.version}",
+                )
+            } catch (e: Throwable) {
+                update.value = update.value.copy(checking = false, message = "检查失败：${friendly(e)}")
+            }
+        }
+    }
+
+    /**
+     * 下载更新：先取服务端哈希（缺失则不下载），再交由平台层测速下载并校验，
+     * 校验通过才唤起安装器。绝不安装未校验的包。
+     */
+    fun downloadUpdate() {
+        val u = update.value
+        if (u.downloading) return
+        val updater = appUpdater
+        if (updater == null) {
+            update.value = u.copy(message = "当前平台不支持应用内更新")
+            return
+        }
+        val info = u.info ?: return
+        update.value = u.copy(downloading = true, progress = 0f, message = null)
+        scope.launch {
+            try {
+                val hash = api.latestHash()?.sha256
+                if (hash.isNullOrBlank()) {
+                    update.value = update.value.copy(
+                        downloading = false, message = "服务端未提供校验值，已取消下载",
+                    )
+                    return@launch
+                }
+                val path = updater.downloadAndVerify(info.mirrors, hash) { p ->
+                    update.value = update.value.copy(progress = p)
+                }
+                update.value = update.value.copy(
+                    downloading = false, progress = 1f,
+                    readyToInstall = path, message = "校验通过，正在唤起安装器",
+                )
+                runCatching { updater.install(path) }.onFailure {
+                    update.value = update.value.copy(message = "无法唤起安装器：${it.message}")
+                }
+            } catch (e: Throwable) {
+                update.value = update.value.copy(downloading = false, message = "下载失败：${friendly(e)}")
+            }
+        }
+    }
+
     // ---- 搜索 ----
 
     fun search(query: String) {
@@ -473,6 +629,10 @@ class AppState(
             books.value = emptyList()
             reader.value = ReaderUiState()
             searchResults.value = emptyList()
+            discover.value = null
+            history.value = emptyList()
+            favoritesOnly.value = false
+            update.value = UpdateUiState()
             serverUrl.value = ""
             deviceId.value = ""
             lastSyncAt.value = 0
@@ -506,5 +666,13 @@ class AppState(
             else -> "${e.message}（HTTP ${e.status}）"
         }
         else -> e.message ?: "未知错误"
+    }
+
+    companion object {
+        /**
+         * 与构建注入的 versionName 同源（CI 由 tag 推导，见 shared/build.gradle.kts 的 APP_VERSION），
+         * 用于「检查更新」的版本比较与设置页展示。
+         */
+        val APP_VERSION: String = appVersionName()
     }
 }

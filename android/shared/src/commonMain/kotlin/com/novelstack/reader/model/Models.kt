@@ -166,3 +166,69 @@ data class ReadingProgress(
     val charOffset: Int,
     val percent: Float,
 )
+
+// ---- 第八阶段：发现页 / 足迹 / 收藏 / 版本 ----
+
+/** 收藏开关请求体。 */
+@Serializable
+data class FavoriteRequest(@SerialName("is_favorite") val isFavorite: Boolean)
+
+/** 收藏接口响应（回显最终状态）。 */
+@Serializable
+data class FavoriteResponse(
+    val ok: Boolean = false,
+    @SerialName("book_id") val bookId: String = "",
+    @SerialName("is_favorite") val isFavorite: Boolean = false,
+)
+
+/** 足迹条目：只有元数据与进度，绝无正文。 */
+@Serializable
+data class HistoryItem(
+    @SerialName("book_id") val bookId: String = "",
+    val title: String = "",
+    val cover: String = "",
+    @SerialName("chapter_index") val chapterIndex: Int = 0,
+    @SerialName("chapter_title") val chapterTitle: String = "",
+    val percent: Double = 0.0,
+    @SerialName("updated_at") val updatedAt: String = "",
+)
+
+@Serializable
+data class HistoryResponse(val items: List<HistoryItem> = emptyList())
+
+/** 发现页卡片（元数据）。 */
+@Serializable
+data class DiscoverBook(
+    val id: String = "",
+    val title: String = "",
+    val author: String = "",
+    val tags: List<String> = emptyList(),
+    @SerialName("chapter_count") val chapterCount: Int = 0,
+    @SerialName("created_at") val createdAt: String = "",
+    @SerialName("is_favorite") val isFavorite: Boolean = false,
+)
+
+@Serializable
+data class TagCount(val name: String = "", val count: Int = 0)
+
+@Serializable
+data class DiscoverResponse(
+    val recent: List<DiscoverBook> = emptyList(),
+    val tags: List<TagCount> = emptyList(),
+    val random: List<DiscoverBook> = emptyList(),
+)
+
+/** App 版本信息（含镜像列表，由服务端环境变量注入）。 */
+@Serializable
+data class AppVersion(
+    val version: String = "",
+    val changelog: String = "",
+    val mirrors: List<String> = emptyList(),
+)
+
+/** 最新 APK 的 SHA-256。 */
+@Serializable
+data class LatestHash(
+    val version: String = "",
+    val sha256: String = "",
+)

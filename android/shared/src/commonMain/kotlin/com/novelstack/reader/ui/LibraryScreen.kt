@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -35,28 +37,27 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
+import com.novelstack.reader.app.Screen
 import com.novelstack.reader.db.Books
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(state: AppState) {
     val books by state.books.collectAsState()
+    val favOnly by state.favoritesOnly.collectAsState()
     val busy by state.busy.collectAsState()
     val notice by state.notice.collectAsState()
     val error by state.error.collectAsState()
 
+    val shown = if (favOnly) books.filter { it.is_favorite != 0L } else books
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("书库") },
+                title = { Text("书架") },
                 actions = {
                     TextButton(onClick = { state.sync() }, enabled = !busy) { Text("同步") }
-                    TextButton(onClick = { state.screen.value = com.novelstack.reader.app.Screen.Search }) {
-                        Text("搜索")
-                    }
-                    TextButton(onClick = { state.screen.value = com.novelstack.reader.app.Screen.Settings }) {
-                        Text("设置")
-                    }
+                    TextButton(onClick = { state.screen.value = Screen.Search }) { Text("搜索") }
                 },
             )
         },
@@ -82,16 +83,38 @@ fun LibraryScreen(state: AppState) {
                 )
             }
 
-            if (books.isEmpty()) {
+            // 全部 / 收藏 筛选
+            Row(
+                modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    selected = !favOnly,
+                    onClick = { state.favoritesOnly.value = false },
+                    label = { Text("全部 ${books.size}") },
+                )
+                FilterChip(
+                    selected = favOnly,
+                    onClick = { state.favoritesOnly.value = true },
+                    label = { Text("收藏 ${books.count { it.is_favorite != 0L }}") },
+                )
+            }
+
+            if (shown.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         if (busy) {
                             CircularProgressIndicator()
                         } else {
-                            Text("书库为空", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                if (favOnly) "还没有收藏的书" else "书库为空",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                "先在控制台上传书籍，然后点右上角「同步」",
+                                if (favOnly) "在阅读页点右上角 ♥ 即可收藏"
+                                else "先在控制台上传书籍，然后点右上角「同步」",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -101,10 +124,10 @@ fun LibraryScreen(state: AppState) {
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
+                    contentPadding = PaddingValues(14.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(books, key = { it.id }) { book ->
+                    items(shown, key = { it.id }) { book ->
                         BookCard(book) { state.openBook(book.id) }
                     }
                 }
@@ -115,6 +138,7 @@ fun LibraryScreen(state: AppState) {
 
 @Composable
 private fun BookCard(book: Books, onClick: () -> Unit) {
+    val favorite = book.is_favorite != 0L
     Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
         Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -133,12 +157,19 @@ private fun BookCard(book: Books, onClick: () -> Unit) {
             }
             Spacer(Modifier.width(14.dp))
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    book.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        book.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (favorite) {
+                        Spacer(Modifier.width(6.dp))
+                        Text("♥", color = MaterialTheme.colorScheme.error)
+                    }
+                }
                 Spacer(Modifier.height(4.dp))
                 val author = book.author.ifBlank { "未知作者" }
                 Text(

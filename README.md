@@ -1412,14 +1412,15 @@ cd android && ./gradlew :androidApp:assembleDebug :shared:testDebugUnitTest
 | `android` | `./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug` | 不跑 release、不跑 lint |
 | `docker` | `docker build -t novelstack-ci .` | 不跑 compose up |
 
-> Gradle wrapper 的二进制 jar 在仓库中以 `android/gradle/wrapper/gradle-wrapper.jar.b64`
-> 文本副本保存，CI 先用 `base64 -d` 还原再运行 `./gradlew`；版本仍是 8.11.1，未升级。
+> `gradle-wrapper.jar` 与 `gradle-wrapper.properties` 均已入库（`.gitattributes` 标记 `*.jar binary`，
+> 避免换行转换损坏），CI 直接 `./gradlew` 即可。同目录的 `gradle-wrapper.jar.b64` 是同一个 jar 的
+> base64 文本副本（早期通过 API 推送时二进制受限留下的备份），仅供人工校验，CI 不再依赖它。
+> 版本仍是 8.11.1，未升级。
 >
 > **已知约束**：通过 GitHub API 推送的文件统一为 `0644`，会丢失 `android/gradlew` 的
 > 可执行位，导致 CI 中 `./gradlew` 以 **exit code 126** 失败（android job 6s 即挂，
-> go/docker job 不受影响）。CI 的 `Restore Gradle wrapper jar` 步骤里已加
-> `chmod +x android/gradlew` 补回执行位。若改用本地 `git push`（能保留 `100755`），
-> 该 chmod 仍是幂等的，可保留。
+> go/docker job 不受影响）。仓库内该文件当前为 `100755`；CI 的
+> `Ensure Gradle wrapper executable` 步骤仍幂等地 `chmod +x`，本地推送与 API 推送两条路径都能跑通。
 
 workflow 语法可用 PyYAML 解析校验；`GOFLAGS=-mod=readonly` 在 go job 的 env 中显式设置。
 
@@ -1547,3 +1548,143 @@ AndroidAudioSink（AudioTrack MODE_STREAM） ──> out.write(pcm)
 - `android/androidApp/src/main/kotlin/com/novelstack/reader/MainActivity.kt`（通知权限 + 服务钩子）
 - `android/androidApp/src/main/AndroidManifest.xml`（权限 + service 声明）
 - `android/gradle/libs.versions.toml`、`android/androidApp/build.gradle.kts`（androidx-media 依赖）
+
+## 18. 第八阶段：客户端体验与书库运营
+
+本阶段给客户端补齐「发现—阅读—足迹—收藏—更新」的闭环，同时保持加密边界不变：所有新接口只读元数据与进度，**不请求、不解密、不返回任何正文**。
+
+### 18.1 服务端接口
+
+| 方法 | 路径 | 鉴权 | 说明 |
+|---|---|---|---|
+| PATCH | `/api/books/{id}/favorite` | device token / session | 请求体 `{"is_favorite":true}`，返回回显状态；未知书 404，缺字段 400 |
+| GET | `/api/history` | 同上 | 按 `reading_progress.updated_at` 倒序，join 书名与章节标题；只含元数据与进度 |
+| GET | `/api/discover` | 同上 | `recent`（最近 12 本）、`tags`（标签聚合前 20）、`random`（随机 5 本） |
+| GET | `/api/app/version` | 同上 | `version` / `changelog` / `mirrors`（镜像数组来自环境变量） |
+| GET | `/api/app/version/latest-hash` | 同上 | 最新 APK 的 `sha256`；未配置时 404（客户端据此拒绝安装未校验包） |
+
+**数据库迁移 v7**：新增 `user_bookmarks(owner_id, book_id, is_favorite, updated_at)`。收藏放独立表而不是 `books` 列，原因是收藏是用户偏好，不应污染 `books.sync_seq` 的增量同步语义；取消收藏写 `is_favorite=0` 而非删行，保持状态可判定。
+
+**配置（环境变量注入，不写死）**：
+
+```bash
+APP_VERSION=0.2.0
+APP_CHANGELOG="新增发现页、足迹、收藏与应用内更新"
+APP_MIRRORS=https://mirror-a.example/apk/latest.apk,https://mirror-b.example/apk/latest.apk
+APP_APK_SHA256=<构建产物的 sha256 十六进制>
+```
+
+`GET /api/books` 与 `/api/books/{id}` 会在响应中附带 `is_favorite`（handler 批量 join 一次，避免 N+1）。
+
+### 18.2 客户端：四 Tab 与发现页
+
+底部导航改为 **书架 / 发现 / 足迹 / 设置**；阅读页全屏不显示底栏。
+
+- `DiscoverScreen`：分类标签流（`FlowRow` + `AssistChip`）、最近更新横向卡片、随机推荐横向卡片与「换一批」（重新拉取 `/api/discover`）。卡片点击直接 `openBook`。
+- `HistoryScreen`：列表展示书名、最后章节、进度条、相对时间（刚刚 / N 分钟前 / N 天前），点击 `openAt(bookId, chapterIndex)` 恢复阅读位置。
+- 书架顶部加「全部 / 收藏」`FilterChip` 切换；卡片对已收藏书显示 ♥。
+- 阅读页右上角 ♥ 切换收藏：**乐观更新本地 SQLCipher → 调 PATCH 确认 → 失败回滚并提示**。
+
+### 18.3 应用内更新：测速 + 哈希校验 + FileProvider
+
+`UpdateManager` 分两层：
+
+1. **commonMain 纯逻辑（可单测）**
+   - `Sha256`：纯 Kotlin SHA-256（不依赖平台），用于校验下载内容；
+   - `UpdatePlanner.pickFastest`：从（镜像, 耗时）里选最快，忽略失败探测；
+   - `UpdatePlanner.isNewer`：点分版本比较；
+   - `AppUpdater` 接口。
+2. **androidMain 实现 `AndroidAppUpdater`**
+   - **测速**：对每个镜像并发发起 `Range: bytes=0-102399`（前 100KB）请求，记录耗时，取最快者；
+   - **下载**：从最快镜像下载完整 APK，回调进度；
+   - **校验**：`Sha256.matches(bytes, expected)`，不符立即抛错，不落可安装文件；
+   - **安装**：写入 `cacheDir/updates/`，经 `FileProvider`（`${applicationId}.fileprovider`）拉起系统安装器（Android 7.0+），并声明 `REQUEST_INSTALL_PACKAGES`。
+
+设置页「检查更新」弹窗展示版本与 changelog；服务端未配置哈希时直接取消下载，避免安装未校验的包。
+
+**发布链路（`.github/workflows/release-apk.yml`）**
+
+打 `v*` tag 触发，四件事必须同时成立才对外分发：
+
+| 环节 | 做法 | 失败时 |
+|---|---|---|
+| 版本号 | 从 tag 推导：`v0.2.1` → `versionName=0.2.1`、`versionCode=major*10000+minor*100+patch=201` | tag 不符合 `vX.Y.Z` 直接 error |
+| 签名 | `secrets.KEYSTORE_B64` 解码到 `build/ci-signing/release.jks`，经 `NOVELSTACK_*` 环境变量传给 `signingConfigs` | 产物仍是 `-unsigned`，`Compute SHA-256` 步骤 error 退出 |
+| 校验 | `sha256sum` + `apksigner verify --print-certs` 回验 | 无 apksigner 时降级为 warning |
+| 分发 | 逐个镜像 `PUT` 上传，统计成功数 | 全部失败则 error |
+
+产物附带 `apk-manifest.json`（`version` / `sha256` / `mirrors`），直接对应服务端要配的 `APP_VERSION` 与 `APP_APK_SHA256`，避免手抄哈希出错。
+
+> 为什么版本号必须由 tag 注入：`versionName` 若固定写 `0.1.0`，用户装上 0.2.0 后客户端仍自报 0.1.0，`isNewer` 会永远判定「有新版本」，形成升级死循环。
+
+### 18.4 阅读体验
+
+| 能力 | 实现 |
+|---|---|
+| 翻页动画 | `HorizontalPager`：`slide`（平移，默认）/ `cover`（覆盖：被翻走的页按 `pageOffset` 轻微后退形成层次）/ `scroll`（上下滚动） |
+| 主题 | `auto`（跟随系统）/ `light`（白天）/ `dark`（夜间）/ `eye`（护眼黄底）；`isDarkTheme` 与 `readerPaletteFor` 统一映射 |
+| 亮度 | 阅读区左右各 30% 区域内上下滑动，按位移调整 `Window.screenBrightness`（平台钩子 `onBrightnessChange`，commonMain 不引用 Android） |
+| 章节预读 | `PrefetchGate(0.8f)`：滚动进度 ≥80% 且存在下一章时，静默拉取下一章密文并解密写入 SQLCipher；每章只触发一次 |
+| 排版 | `TextIndent(firstLine = 2 字符)` 首行缩进；`LineBreak.Paragraph`；`Kinsoku.apply` 在禁则标点前插入 WORD JOINER（U+2060）近似避头尾 |
+
+> 预读遵循第七阶段的铁律：密文与解密结果只存在于内存与 SQLCipher，不落任何明文文件。
+
+### 18.5 安全边界
+
+- 发现 / 足迹 / 收藏接口的 SQL 只 SELECT 元数据列（`title/author/tags/chapter_count/created_at/percent/chapter_index`），不碰 `storage_path`、`wrapped_dek`、密文文件。
+- 集成测试 `TestDiscoverAndHistoryNoPlaintext` 断言响应 JSON 不含 `text/ciphertext/content/storage_path/wrapped_dek/dek_nonce` 等字段。
+- 下载安装必须通过 SHA-256 校验 + FileProvider，二者缺一不可。
+
+### 18.6 测试与验收
+
+| 项目 | 结果 |
+|---|---|
+| Go 服务端集成测试 | `TestDiscoverAndHistoryNoPlaintext`、`TestFavoriteToggle`、`TestAppVersionEndpoints` 全部通过；`go vet` / `gofmt` / `go test ./...` 全绿（19 个包） |
+| 客户端单测 | `:shared:testDebugUnitTest` **56 个用例全通过**，本阶段新增 23 个：`Sha256Test`(5) 已知向量、`UpdatePlannerTest`(6) 选最快/失败忽略/版本比较、`PrefetchGateTest`(5) 80% 触发一次、`KinsokuTest`(5) 避头尾、`AppVersionTest`(2) 版本注入格式 |
+| 构建 | `:shared:testDebugUnitTest`、`:androidApp:assembleDebug`、`:androidApp:assembleRelease`（含 R8 + lintVital）均 BUILD SUCCESSFUL |
+| 签名链路 | 以测试 keystore 注入 `NOVELSTACK_KEYSTORE_B64` 等 4 个环境变量，产出 `androidApp-release-unsigned.apk` 以外的已签名包，`apksigner verify` 通过 |
+
+真机手工验收：发现页刷新与分类、书架「只看收藏」与阅读页收藏联动、足迹点击恢复、翻页动画切换不崩溃、四主题切换、边缘滑动调亮度、弱网下 80% 预读后下一章秒开、弱网下多镜像测速选优并正常唤起安装器。
+
+### 18.7 已知限制
+
+1. **翻页仅平移/覆盖**：未实现仿真（卷曲/翻书）动画；`cover` 是基于 `pageOffset` 的层次位移近似。
+2. **避头尾为近似**：Compose 未暴露完整 kinsoku 开关，采用 WORD JOINER 预处理，极端排版下仍可能有少量不理想断行。
+3. **收藏本地优先**：单用户单设备以本地 SQLCipher 为准；多设备同时改收藏时以最后一次 PATCH 为准，不做冲突合并。
+4. **更新分发需自备镜像与签名**：CI 的 `release-apk.yml` 已支持签名注入（`KEYSTORE_B64` 等 4 个 secrets）与多镜像上传，但 secrets/`vars.APK_MIRRORS` 需由仓库维护者配置；未配置签名时 CI 直接失败而不产出发不出去的 unsigned 包。
+5. **亮度作用于窗口**：调节的是当前 Activity 的 `screenBrightness`，退出阅读页后由系统/其他页面接管。
+
+### 18.8 本阶段文件清单
+
+**服务端**
+- `internal/db/db.go`（迁移 v7：user_bookmarks）
+- `internal/books/bookmarks.go`（收藏读写）
+- `internal/books/books.go`（Book.IsFavorite 运行时填充、List/GetMeta 附带收藏）
+- `internal/server/library.go`（favorite / history / discover / version / latest-hash）
+- `internal/server/server.go`（路由注册）
+- `internal/config/config.go`（APP_VERSION / APP_CHANGELOG / APP_MIRRORS / APP_APK_SHA256）
+- `internal/server/library_test.go`（集成测试）
+
+**客户端（commonMain）**
+- `model/Models.kt`（History/Discover/AppVersion/Favorite 等 DTO）
+- `net/NovelApi.kt`（history/discover/setFavorite/appVersion/latestHash）
+- `app/AppState.kt`（四 Tab、发现/足迹/收藏/更新/亮度/预读、UpdateUiState）
+- `app/AppVersion.kt`（`expect fun appVersionName()`：版本号由构建注入，避免自报版本永久落后）
+- `ui/App.kt`（底部导航）、`ui/DiscoverScreen.kt`、`ui/HistoryScreen.kt`、`ui/LibraryScreen.kt`、`ui/SettingsScreen.kt`、`ui/ReaderScreen.kt`、`ui/Theme.kt`
+- `update/Sha256.kt`、`update/UpdatePlanner.kt`（AppUpdater 接口）
+- `reading/PrefetchGate.kt`、`reading/Kinsoku.kt`
+- `sqldelight/.../ReaderDatabase.sq`（books.is_favorite、收藏查询）
+- `db/ReaderRepository.kt`（ensureColumns、收藏读写）
+
+**客户端（androidMain / androidApp）**
+- `androidMain/.../update/AndroidAppUpdater.kt`（测速 + 下载 + 校验 + FileProvider）
+- `androidMain/.../app/AppVersion.android.kt`（读 `BuildConfig.APP_VERSION`；`iosMain` 有对应 actual）
+- `androidMain/.../data/AndroidReaderStore.kt`（幂等 ALTER）
+- `androidApp/.../ReaderApplication.kt`（注入 AndroidAppUpdater）
+- `androidApp/.../MainActivity.kt`（亮度钩子）
+- `androidApp/src/main/AndroidManifest.xml`（REQUEST_INSTALL_PACKAGES、FileProvider）
+- `androidApp/src/main/res/xml/file_paths.xml`
+
+**测试与 CI**
+- `commonTest/.../update/Sha256Test.kt`、`update/UpdatePlannerTest.kt`、`reading/PrefetchGateTest.kt`、`reading/KinsokuTest.kt`、`app/AppVersionTest.kt`
+- `.github/workflows/release-apk.yml`（打 tag 构建 + 多镜像上传 + 哈希输出）

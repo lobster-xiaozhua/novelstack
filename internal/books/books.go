@@ -44,6 +44,8 @@ type Book struct {
 	IndexState   string   `json:"index_state"`
 	CreatedAt    string   `json:"created_at"`
 	DeletedAt    *string  `json:"deleted_at,omitempty"`
+	// IsFavorite 是运行时填充的收藏标记（不在 books 表里，由 handler 批量 join 后设置）。
+	IsFavorite bool `json:"is_favorite"`
 	// OwnerID 是上传者用户名；单用户阶段仍用于“不可仅凭 bookID 越权”的校验。
 	OwnerID string `json:"-"`
 }
@@ -559,6 +561,12 @@ func (svc *Service) List(w http.ResponseWriter, r *http.Request, username, ip st
 	if list == nil {
 		list = []Book{}
 	}
+	// 批量填充收藏标记（一次查询，避免 N+1）。
+	if favs, err := svc.Store.FavoriteSet(r.Context(), username); err == nil {
+		for i := range list {
+			list[i].IsFavorite = favs[list[i].ID]
+		}
+	}
 	svc.Audit.Record(r.Context(), username, ip, "book_list", "", "ok", fmt.Sprintf("count=%d", len(list)))
 	writeJSON(w, http.StatusOK, list)
 }
@@ -571,6 +579,9 @@ func (svc *Service) GetMeta(w http.ResponseWriter, r *http.Request, id, username
 		svc.Audit.Record(r.Context(), username, ip, "book_get", id, "denied", "not found")
 		writeErr(w, st, msg)
 		return
+	}
+	if fav, err := svc.Store.IsFavorite(r.Context(), username, id); err == nil {
+		b.IsFavorite = fav
 	}
 	svc.Audit.Record(r.Context(), username, ip, "book_get", id, "ok", "")
 	writeJSON(w, http.StatusOK, b)

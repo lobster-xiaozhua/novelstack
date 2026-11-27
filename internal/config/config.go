@@ -127,6 +127,16 @@ type Config struct {
 	// 告警 webhook；为空表示只显示控制台横幅
 	AlertWebhook  string
 	AlertCooldown time.Duration
+
+	// ---- 第八阶段：发现页与 App 版本分发 ----
+
+	// 最新 App 版本号与更新说明（展示给客户端「检查更新」弹窗）
+	AppVersion   string
+	AppChangelog string
+	// APK 镜像 URL 列表：由环境变量 APP_MIRRORS 注入（逗号分隔），禁止在代码中写死。
+	AppMirrors []string
+	// 最新 APK 的 SHA-256（hex）：客户端测速下载后必须校验该值才允许安装。
+	AppAPKSHA256 string
 }
 
 // FromEnv 从环境变量构建配置。任何关键错误都返回 error，由 main 打印后退出。
@@ -186,6 +196,11 @@ func FromEnv() (*Config, error) {
 		BackupPassphraseFile: envStr("BACKUP_PASSPHRASE_FILE", ""),
 		AlertWebhook:         envStr("BACKUP_ALERT_WEBHOOK", ""),
 		AlertCooldown:        time.Duration(envInt("ALERT_COOLDOWN_MINUTES", 60)) * time.Minute,
+
+		AppVersion:   envStr("APP_VERSION", "0.1.0"),
+		AppChangelog: envStr("APP_CHANGELOG", ""),
+		AppMirrors:   splitList(envStr("APP_MIRRORS", "")),
+		AppAPKSHA256: strings.ToLower(strings.TrimSpace(envStr("APP_APK_SHA256", ""))),
 	}
 	if c.ChunkSize < 64<<10 || c.ChunkSize > 16<<20 {
 		return nil, fmt.Errorf("CHUNK_SIZE 必须在 64KiB..16MiB 之间")
@@ -326,6 +341,24 @@ func envStr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitList 把逗号分隔的列表拆成去空、去重（保序）的切片。
+func splitList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := []string{}
+	for _, part := range strings.Split(s, ",") {
+		v := strings.TrimSpace(part)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 func envBool(key string, def bool) bool {

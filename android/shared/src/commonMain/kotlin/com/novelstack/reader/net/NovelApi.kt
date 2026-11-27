@@ -2,8 +2,14 @@ package com.novelstack.reader.net
 
 import com.novelstack.reader.model.ApiError
 import com.novelstack.reader.model.ApiException
+import com.novelstack.reader.model.AppVersion
 import com.novelstack.reader.model.AudioManifest
 import com.novelstack.reader.model.DeviceAuth
+import com.novelstack.reader.model.DiscoverResponse
+import com.novelstack.reader.model.FavoriteRequest
+import com.novelstack.reader.model.FavoriteResponse
+import com.novelstack.reader.model.HistoryResponse
+import com.novelstack.reader.model.LatestHash
 import com.novelstack.reader.model.LoginRequest
 import com.novelstack.reader.model.PrefetchRequest
 import com.novelstack.reader.model.PrefetchResponse
@@ -15,6 +21,7 @@ import com.novelstack.reader.model.SyncManifest
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
@@ -90,6 +97,41 @@ class NovelApi(
         val resp = client.get("$baseUrl/api/books/$bookId/progress") { auth() }
         if (resp.status.value == 404) return null
         return json.decodeFromString(ProgressDto.serializer(), resp.textOrThrow())
+    }
+
+    // ---- 第八阶段：发现 / 足迹 / 收藏 / 版本 ----
+
+    suspend fun history(): HistoryResponse {
+        val resp = client.get("$baseUrl/api/history") { auth() }
+        return json.decodeFromString(HistoryResponse.serializer(), resp.textOrThrow())
+    }
+
+    suspend fun discover(): DiscoverResponse {
+        val resp = client.get("$baseUrl/api/discover") { auth() }
+        return json.decodeFromString(DiscoverResponse.serializer(), resp.textOrThrow())
+    }
+
+    /** 设置/取消收藏，返回服务端回显的状态。 */
+    suspend fun setFavorite(bookId: String, favorite: Boolean): Boolean {
+        val resp = client.patch("$baseUrl/api/books/$bookId/favorite") {
+            auth()
+            contentType(ContentType.Application.Json)
+            setBody(json.encodeToString(FavoriteRequest.serializer(), FavoriteRequest(favorite)))
+        }
+        val r = json.decodeFromString(FavoriteResponse.serializer(), resp.textOrThrow())
+        return r.isFavorite
+    }
+
+    suspend fun appVersion(): AppVersion {
+        val resp = client.get("$baseUrl/api/app/version") { auth() }
+        return json.decodeFromString(AppVersion.serializer(), resp.textOrThrow())
+    }
+
+    /** 服务端未配置哈希时返回 null（客户端应提示错误，而不是安装未校验的包）。 */
+    suspend fun latestHash(): LatestHash? {
+        val resp = client.get("$baseUrl/api/app/version/latest-hash") { auth() }
+        if (resp.status.value == 404) return null
+        return json.decodeFromString(LatestHash.serializer(), resp.textOrThrow())
     }
 
     suspend fun audioManifest(bookId: String, chapterIndex: Int): AudioManifest {

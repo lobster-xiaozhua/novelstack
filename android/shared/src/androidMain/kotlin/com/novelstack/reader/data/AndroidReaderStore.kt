@@ -30,6 +30,7 @@ fun createReaderStore(
         factory = factory,
     )
     val repo = ReaderRepository(ReaderDatabase(driver), driver)
+    repo.ensureColumns()
     repo.initFts()
     return repo
 }

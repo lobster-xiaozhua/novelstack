@@ -40,6 +40,7 @@ class ReaderApplication : Application() {
             sinkFactory = koin.get<AudioSinkFactory>(),
             json = koin.get<Json>(),
             scope = koin.get<CoroutineScope>(),
+            appUpdater = com.novelstack.reader.update.AndroidAppUpdater(this),
         )
     }
 }

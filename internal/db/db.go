@@ -299,6 +299,22 @@ CREATE TABLE IF NOT EXISTS health_signals (
 );
 `,
 	},
+	{
+		Version: 7,
+		SQL: `
+-- 第八阶段：书籍收藏（星标/心标）。独立表而非 books 列，避免收藏状态污染
+-- books 的 sync_seq 语义（收藏是用户偏好，不应触发整本书重新同步）。
+-- 只存 book_id 与布尔标记，绝不涉及正文。
+CREATE TABLE IF NOT EXISTS user_bookmarks (
+    owner_id     TEXT NOT NULL,
+    book_id      TEXT NOT NULL,
+    is_favorite  INTEGER NOT NULL DEFAULT 0,
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (owner_id, book_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_bookmarks_fav ON user_bookmarks(owner_id, is_favorite);
+`,
+	},
 }
 
 // Open 打开（必要时创建）SQLite 数据库，启用 WAL 与 busy_timeout，并执行迁移。

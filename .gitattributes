@@ -1,0 +1,11 @@
+# 二进制文件：禁止换行转换与文本差异（Gradle wrapper、APK、图片等）
+*.jar   binary
+*.b64   binary
+*.apk   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.ttf   binary
+*.otf   binary
+*.so    binary

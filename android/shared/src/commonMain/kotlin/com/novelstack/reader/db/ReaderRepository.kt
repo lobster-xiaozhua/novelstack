@@ -67,6 +67,22 @@ class ReaderRepository(
 
     fun listBooks(): List<Books> = q.selectBooks().executeAsList()
 
+    /** 老库升级：SQLDelight 未配置版本迁移，这里对后加的列做幂等 ALTER（已存在则忽略）。 */
+    fun ensureColumns() {
+        runCatching {
+            raw.exec("ALTER TABLE books ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
+    fun favoriteBooks(): List<Books> = q.selectFavoriteBooks().executeAsList()
+
+    fun setFavorite(bookId: String, favorite: Boolean) {
+        q.updateFavorite(if (favorite) 1L else 0L, bookId)
+    }
+
+    fun isFavorite(bookId: String): Boolean =
+        q.selectFavoriteFlag(bookId).executeAsOneOrNull()?.let { it != 0L } ?: false
+
     fun getBook(id: String): Books? = q.selectBook(id).executeAsOneOrNull()
 
     fun deleteBook(id: String) {

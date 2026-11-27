@@ -53,3 +53,18 @@ fun readerPalette(key: String): ReaderPalette = when (key) {
     "mint" -> ReaderPalette(Color(0xFFE4F0E8), Color(0xFF1E3528), Color(0xFF5C7768))
     else -> ReaderPalette(Color(0xFF0D1117), Color(0xFFD6DEE8), Color(0xFF7D8A99))
 }
+
+/** 主题 key（auto/light/dark/eye）→ App 是否使用暗色。 */
+fun isDarkTheme(theme: String, systemDark: Boolean): Boolean = when (theme) {
+    "dark" -> true
+    "light", "eye" -> false
+    else -> systemDark // auto
+}
+
+/** 主题 key + 系统明暗 → 阅读区纸张色。 */
+fun readerPaletteFor(theme: String, systemDark: Boolean): ReaderPalette = when (theme) {
+    "dark" -> readerPalette("dark")
+    "light" -> readerPalette("paper")
+    "eye" -> readerPalette("sepia") // 护眼：黄底
+    else -> if (systemDark) readerPalette("dark") else readerPalette("paper")
+}

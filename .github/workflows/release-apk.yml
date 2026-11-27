@@ -1,0 +1,156 @@
+name: Release APK
+
+# 第八阶段：打 tag 时构建**已签名** APK，计算 SHA-256 并上传到多个镜像。
+# 镜像地址与令牌全部来自 repository 配置，workflow 内不硬编码：
+#   vars.APK_MIRRORS           逗号分隔的上传 URL 列表（如 https://mirror1/upload/apk,https://mirror2/...）
+#   secrets.APK_UPLOAD_TOKEN    上传令牌（Bearer）
+# 签名来自 secrets（缺一不可，否则拒绝分发）：
+#   secrets.KEYSTORE_B64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD
+# 未配置 APK_MIRRORS 时只产出 artifact + 哈希 + manifest，不对外分发。
+#
+# 版本号取自 tag：v0.2.1 → versionName=0.2.1，versionCode=201。
+# 不做这层映射的话 release 包会永远自报 0.1.0，客户端每次检查都提示有新版本。
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    name: build + publish APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # wrapper jar 已随仓库提交（.gitattributes 标记 binary），
+      # 这里只需补执行位：checkout 在部分平台上不保留 +x。
+      - name: Ensure Gradle wrapper executable
+        run: chmod +x android/gradlew
+
+      - name: Derive version from tag
+        id: ver
+        run: |
+          set -euo pipefail
+          v="${GITHUB_REF_NAME#v}"
+          if ! [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag 必须是 vMAJOR.MINOR.PATCH，当前为 ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          IFS='.' read -r major minor patch <<< "$v"
+          echo "name=$v" >> "$GITHUB_OUTPUT"
+          # versionCode 必须随版本单调递增：major*10000 + minor*100 + patch
+          echo "code=$(( major * 10000 + minor * 100 + patch ))" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble release APK
+        env:
+          NOVELSTACK_VERSION: ${{ steps.ver.outputs.name }}
+          NOVELSTACK_VERSION_CODE: ${{ steps.ver.outputs.code }}
+          NOVELSTACK_KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          NOVELSTACK_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          NOVELSTACK_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          NOVELSTACK_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: cd android && ./gradlew :androidApp:assembleRelease
+
+      - name: Compute SHA-256
+        id: hash
+        run: |
+          set -euo pipefail
+          UNSIGNED=$(ls android/androidApp/build/outputs/apk/release/*-unsigned.apk 2>/dev/null || true)
+          APK=$(ls android/androidApp/build/outputs/apk/release/*.apk | grep -v -- '-unsigned' | head -n1 || true)
+          if [ -z "$APK" ]; then
+            echo "::error::未产出已签名 APK（缺签名 secrets）。未签名包不能安装，拒绝继续。"
+            ls -l android/androidApp/build/outputs/apk/release/ || true
+            exit 1
+          fi
+          SHA=$(sha256sum "$APK" | awk '{print $1}')
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "APK: $APK"
+          echo "SHA-256: $SHA"
+          # 回验签名，避免“打了签名但其实用了 debug key”这类静默错误
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          APKSIGNER=$(find "$SDK/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -n1)
+          if [ -n "$APKSIGNER" ]; then
+            "$APKSIGNER" verify --print-certs "$APK" | head -n 5
+          else
+            echo "::warning::未找到 apksigner，跳过签名回验"
+          fi
+
+      - name: Write manifest for server config
+        env:
+          VERSION: ${{ steps.ver.outputs.name }}
+          SHA: ${{ steps.hash.outputs.sha256 }}
+          MIRRORS: ${{ vars.APK_MIRRORS }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          mirrors = [m.strip() for m in os.environ.get("MIRRORS", "").split(",") if m.strip()]
+          doc = {
+              "version": os.environ["VERSION"],
+              "sha256": os.environ["SHA"],
+              "mirrors": mirrors,
+          }
+          with open("apk-manifest.json", "w", encoding="utf-8") as f:
+              json.dump(doc, f, ensure_ascii=False, indent=2)
+          print(json.dumps(doc, ensure_ascii=False, indent=2))
+          PY
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: novelstack-apk
+          path: |
+            ${{ steps.hash.outputs.apk }}
+            apk-manifest.json
+
+      - name: Publish to mirrors
+        if: ${{ vars.APK_MIRRORS != '' }}
+        env:
+          APK_PATH: ${{ steps.hash.outputs.apk }}
+          MIRRORS: ${{ vars.APK_MIRRORS }}
+          TOKEN: ${{ secrets.APK_UPLOAD_TOKEN }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra URLS <<< "$MIRRORS"
+          ok=0
+          for u in "${URLS[@]}"; do
+            u_trimmed="$(echo "$u" | xargs)"
+            [ -z "$u_trimmed" ] && continue
+            if curl -fsS --max-time 120 -X PUT \
+                 -H "Authorization: Bearer ${TOKEN}" \
+                 -H "Content-Type: application/vnd.android.package-archive" \
+                 --data-binary @"$APK_PATH" "$u_trimmed"; then
+              echo "uploaded -> $u_trimmed"
+              ok=$((ok+1))
+            else
+              echo "::warning::upload failed -> $u_trimmed"
+            fi
+          done
+          echo "published to $ok mirror(s)"
+          if [ "$ok" -eq 0 ]; then
+            echo "::error::all mirrors failed"
+            exit 1
+          fi
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### APK ${{ steps.ver.outputs.name }}"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| versionName | \`${{ steps.ver.outputs.name }}\` |"
+            echo "| versionCode | \`${{ steps.ver.outputs.code }}\` |"
+            echo "| SHA-256 | \`${{ steps.hash.outputs.sha256 }}\` |"
+            echo ""
+            echo "服务端需同步设置 \`APP_VERSION\` 与本 SHA-256（见 apk-manifest.json）。"
+          } >> "$GITHUB_STEP_SUMMARY"
