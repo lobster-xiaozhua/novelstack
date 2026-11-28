@@ -414,8 +414,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   padding: 26px 20px 120px;
   max-width: 760px; margin: 0 auto; width: 100%;
 }
-.reader-body h2 { margin: 0 0 20px; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
-.reader-text { font-size: 18px; line-height: 1.85; color: var(--label); white-space: pre-wrap; }
+/* 标题与正文之间留出呼吸空间；正文按段落排版：首行缩进 2em、1.5 倍行高、段间距 16px。 */
+.reader-body h2 { margin: 0 0 28px; font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.reader-text { font-size: 18px; color: var(--label); }
+.reader-text p {
+  margin: 0 0 16px;
+  text-indent: 2em;
+  line-height: 1.5;
+  overflow-wrap: break-word;
+}
+.reader-text p:last-child { margin-bottom: 0; }
 .reader-text::selection { background: var(--blue-dim); }
 
 .reader-foot {
@@ -882,3 +890,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .up-fields { grid-template-columns: 1fr; }
   .up-fields .field:first-child { grid-column: auto; }
 }
+
+/* 小号操作按钮（书籍列表行内） */
+.btn.btn-sm { min-height: 28px; padding: 4px 11px; font-size: 12px; }

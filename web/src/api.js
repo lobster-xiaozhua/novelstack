@@ -43,6 +43,10 @@ export const getMe = () => request('/api/me')
 /** 管理端：列出当前用户的书籍（GET /api/books，session 鉴权）。 */
 export const getBooks = () => request('/api/books')
 
+/** 管理端：用当前解析器对已入库书籍重新切章（密文不动，只重建目录）。 */
+export const reparseBook = (id) =>
+  request(`/api/books/${encodeURIComponent(id)}/reparse`, { method: 'POST' })
+
 /**
  * 管理端：上传书籍（POST /api/books，multipart/form-data）。
  *

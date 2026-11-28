@@ -193,6 +193,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("PATCH /api/books/{id}", s.requireSession(s.handleBookPatch))
 	s.mux.HandleFunc("GET /api/books/{id}/content", s.requireSession(s.handleBookContent))
 	s.mux.HandleFunc("DELETE /api/books/{id}", s.requireSession(s.handleBookDelete))
+	// 重新解析：用当前解析器对已入库书籍重建章节目录（密文不动，只更新目录）。
+	s.mux.HandleFunc("POST /api/books/{id}/reparse", s.requireSession(s.handleBookReparse))
 
 	// 章节（第三阶段）：目录不解密；单章明文支持 ETag/304；回执用于覆盖度指标。
 	// 目录允许 device token（同步需要）；明文与回执仅 session。
@@ -499,6 +501,18 @@ func (s *Server) handleBookContent(w http.ResponseWriter, r *http.Request, id id
 func (s *Server) handleBookDelete(w http.ResponseWriter, r *http.Request, id identity) {
 	bid := r.PathValue("id")
 	s.books.Delete(w, r, bid, id.username, id.ip)
+}
+
+// handleBookReparse 处理 POST /api/books/{id}/reparse。
+// 仅会话可用；用新章节规则重建目录，不改动密文与 SHA-256。
+func (s *Server) handleBookReparse(w http.ResponseWriter, r *http.Request, id identity) {
+	bid := r.PathValue("id")
+	count, err := s.books.Reparse(r.Context(), bid, id.username, id.ip)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "reparse failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"book_id": bid, "chapters": count})
 }
 
 // handleChapters 返回章节目录（不含正文）。

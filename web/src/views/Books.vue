@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { getBooks, uploadBook } from '../api'
+import { getBooks, uploadBook, reparseBook } from '../api'
 import { bytes, ts } from '../format'
 
 // 管理端书籍管理：上传入口 + 书籍列表。
@@ -29,6 +29,12 @@ const fileInput = ref(null)
 // 轻提示（Toast）：超限等非阻塞错误
 const toast = ref('')
 let toastTimer = 0
+
+// 重新解析状态
+const reparseTarget = ref(null) // { id, title }
+const reparsing = ref(false)
+const reparseError = ref('')
+
 function showToast(msg) {
   toast.value = msg
   clearTimeout(toastTimer)
@@ -140,6 +146,27 @@ async function submit() {
 }
 
 const pct = computed(() => Math.round(progress.value * 100))
+
+function askReparse(book) {
+  reparseTarget.value = { id: book.id, title: book.title }
+  reparseError.value = ''
+}
+
+async function doReparse() {
+  if (!reparseTarget.value || reparsing.value) return
+  reparsing.value = true
+  reparseError.value = ''
+  try {
+    const res = await reparseBook(reparseTarget.value.id)
+    reparseTarget.value = null
+    showToast(`已按新规则重新切分为 ${res.chapters} 章`)
+    await loadBooks()
+  } catch (e) {
+    reparseError.value = e.message || String(e)
+  } finally {
+    reparsing.value = false
+  }
+}
 </script>
 
 <template>
@@ -176,6 +203,7 @@ const pct = computed(() => Math.round(progress.value * 100))
             <th class="num">大小</th>
             <th>状态</th>
             <th>导入时间</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -186,6 +214,7 @@ const pct = computed(() => Math.round(progress.value * 100))
             <td class="num" data-label="大小">{{ bytes(b.size_bytes) }}</td>
             <td data-label="状态"><span class="pill" :class="b.index_state === 'ok' ? 'ok' : 'muted'">{{ b.index_state }}</span></td>
             <td data-label="导入时间">{{ ts(b.created_at) }}</td>
+            <td data-label="操作"><button type="button" class="btn ghost btn-sm" @click="askReparse(b)">重新解析</button></td>
           </tr>
         </tbody>
       </table>
@@ -269,6 +298,19 @@ const pct = computed(() => Math.round(progress.value * 100))
           <button v-if="phase !== 'done'" class="btn" type="button" :disabled="!canSubmit" @click="submit">
             {{ phase === 'error' ? '重试' : (phase === 'uploading' ? '上传中…' : '开始上传') }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 重新解析确认 -->
+    <div v-if="reparseTarget" class="overlay" @mousedown.self="!reparsing && (reparseTarget = null)">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="重新解析">
+        <h2>重新解析章节</h2>
+        <p class="up-lead">将用最新的章节规则重新切分《{{ reparseTarget.title }}》的目录。密文不改动，只重建章节索引；进度会保留，但目录会更新。</p>
+        <div v-if="reparseError" class="up-err">{{ reparseError }}</div>
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" :disabled="reparsing" @click="reparseTarget = null">取消</button>
+          <button class="btn" type="button" :disabled="reparsing" @click="doReparse">{{ reparsing ? '解析中…' : '确认重新解析' }}</button>
         </div>
       </div>
     </div>

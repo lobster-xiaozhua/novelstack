@@ -34,6 +34,31 @@ const percent = computed(() => {
   return Math.min(1, (current.value + 0.02) / total.value)
 })
 
+// 正文段落：换行切段 + 去掉与章节标题重复的首行 + 过滤空行。
+// 标题已由上方 h2 显示，正文里再出现一遍就是"莫名其妙的重复标题"（见截图）。
+// 只改渲染层，text.value 原样保留给 TTS 与搜索。
+const paragraphs = computed(() => {
+  const title = (chapters.value[current.value]?.title || '').trim()
+  const out = []
+  for (const raw of text.value.split('\n')) {
+    let line = raw.trim()
+    if (!line) continue
+    // 整行就是标题（独立标题行）→ 丢弃，避免与 h2 重复
+    if (title && (line === title || normalizeHeading(line) === normalizeHeading(title))) continue
+    // 标题与正文粘连成一整行时，剥掉开头的标题前缀，正文不再重复标题
+    if (title && line.startsWith(title) && line.length > title.length) {
+      const rest = line.slice(title.length).trim()
+      if (rest) line = rest
+    }
+    out.push(line)
+  }
+  return out
+})
+
+function normalizeHeading(s) {
+  return s.replace(/[\s·•\-—:：\[\]【】]/g, '')
+}
+
 function ensureWorker() {
   if (!worker) {
     worker = new Worker(new URL('../../crypto/decrypt.worker.js', import.meta.url), { type: 'module' })
@@ -291,7 +316,10 @@ onUnmounted(() => {
       <div v-if="offlineReading && !loading" class="note" style="font-size:12px">
         离线阅读：本章来自本地密文缓存
       </div>
-      <div v-if="!loading" class="reader-text">{{ text }}</div>
+      <div v-if="!loading" class="reader-text">
+        <p v-for="(para, i) in paragraphs" :key="i">{{ para }}</p>
+        <div v-if="!paragraphs.length" class="empty" style="padding:24px">本章暂无正文</div>
+      </div>
     </div>
 
     <div class="reader-foot">

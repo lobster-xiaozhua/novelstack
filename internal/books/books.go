@@ -18,6 +18,7 @@ import (
 	"novelstack/internal/chapterscan"
 	"novelstack/internal/cryptobox"
 	"novelstack/internal/purge"
+	"novelstack/internal/textenc"
 )
 
 // Store 封装 books 表操作。
@@ -483,9 +484,13 @@ func (svc *Service) storeEncrypted(ctx context.Context, p io.Reader, meta upload
 		}
 	}()
 
-	// 边加密边扫描章节标题：明文只经过管道，不额外驻留
+	// 边加密边扫描章节标题：明文只经过管道，不额外驻留。
+	// 先做流式编码归一化（GBK/UTF-16/UTF-8 BOM → UTF-8），否则 GBK 文本里
+	// 没有 UTF-8 的「第」「章」字节，章节正则必然失效；归一化后的字节流
+	// 同时供章节扫描与加密使用，SHA256/size 也基于它，解密出来即 UTF-8。
+	normalized := textenc.Normalize(p)
 	scanner := chapterscan.New(svc.MaxChapters)
-	sum, size, encErr := encryptCounting(io.TeeReader(p, scanner), f, dek, id, svc.ChunkSize)
+	sum, size, encErr := encryptCounting(io.TeeReader(normalized, scanner), f, dek, id, svc.ChunkSize)
 	closeErr := f.Close()
 	if encErr != nil || closeErr != nil {
 		if isTooLarge(encErr) || isTooLarge(closeErr) {
@@ -739,6 +744,28 @@ func (svc *Service) Delete(w http.ResponseWriter, r *http.Request, id, username,
 	}
 	svc.Audit.Record(r.Context(), username, ip, "book_delete", id, "ok", "")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Reparse 用当前章节解析器对已入库书籍重新切章并覆盖目录。
+//
+// 用途：章节解析规则升级（如修复"标题与正文粘连"的切分错位）后，
+// 用户无需删书重传——密文不动，只按新规则重建 chapter 目录与 chapter_count。
+// 明文只在内存中短暂存在（LoadPlaintextFor 解密），不落盘；归属校验由它完成。
+func (svc *Service) Reparse(ctx context.Context, bookID, username, ip string) (int, error) {
+	_, plain, err := svc.LoadPlaintextFor(ctx, bookID, username)
+	if err != nil {
+		svc.Audit.Record(ctx, username, ip, "book_reparse", bookID, "denied", "load failed")
+		return 0, err
+	}
+	chapters := chapterscan.Split(string(plain))
+	if err := svc.Store.SaveChapters(ctx, bookID, chapters); err != nil {
+		svc.Audit.Record(ctx, username, ip, "book_reparse", bookID, "error", "save chapters failed")
+		return 0, err
+	}
+	svc.EnqueueIndex(bookID) // 章节标题进检索索引，重建
+	svc.Audit.Record(ctx, username, ip, "book_reparse", bookID, "ok",
+		fmt.Sprintf("chapters=%d", len(chapters)))
+	return len(chapters), nil
 }
 
 // writerFunc 把 func([]byte) (int, error) 风格的写入适配为 io.Writer。

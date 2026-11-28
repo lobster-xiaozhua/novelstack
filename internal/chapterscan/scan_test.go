@@ -123,3 +123,43 @@ func scanAll(text string) []Chapter {
 	_, _ = sc.Write([]byte(text))
 	return sc.Close()
 }
+
+// TestRealWorldStuckHeading：真实网文格式——书前目录表（独立短标题行）+
+// 正文每章一整行且标题与正文粘连（"第1章 标题正文正文..."）。
+// 修复前：目录行被切成碎片章、正文全被塞进"前言"。
+func TestRealWorldStuckHeading(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("前言\n")
+	// 书前目录表：连续独立短标题行（标题与正文一致）
+	for i := 1; i <= 3; i++ {
+		b.WriteString("第" + string(rune('0'+i)) + "章 标题" + string(rune('A'+i)) + "\n")
+	}
+	// 正文：每章一整行，标题粘连正文
+	b.WriteString("第1章 标题B" + strings.Repeat("正文内容。", 40) + "\n")
+	b.WriteString("第2章 标题C" + strings.Repeat("另一个故事。", 50) + "\n")
+	b.WriteString("第3章 标题D" + strings.Repeat("结局。", 40) + "\n")
+	text := b.String()
+
+	got := Split(text)
+	for _, c := range got {
+		t.Logf("index=%d title=%q chars=%d", c.Index, c.Title, c.Chars)
+	}
+	// 正文三章各自应 >= 100 字；不应出现只有标题的碎片章。
+	for _, c := range got {
+		if c.Title != "前言" && c.Title != "全文" && c.Chars < 100 {
+			t.Errorf("碎片章: title=%q chars=%d", c.Title, c.Chars)
+		}
+	}
+	// 最大章不应吞掉几乎全书。
+	max := 0
+	for _, c := range got { if c.Chars > max { max = c.Chars } }
+	if max > 2500 {
+		t.Errorf("某章吞掉过多正文: max=%d total=%d", max, len([]rune(text)))
+	}
+	// Scanner 与 Split 必须一致。
+	scan := scanAll(text)
+	if len(scan) != len(got) {
+		t.Fatalf("scanner/split 不一致: %d vs %d", len(scan), len(got))
+	}
+	for i := range got { if scan[i] != got[i] { t.Fatalf("第%d章不一致 want=%+v got=%+v", i, got[i], scan[i]) } }
+}
