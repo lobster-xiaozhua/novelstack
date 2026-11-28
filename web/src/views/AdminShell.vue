@@ -29,6 +29,9 @@ async function signOut() {
         <div class="group">仪表盘</div>
         <router-link to="/admin/overview"><i class="dot" />概览</router-link>
 
+        <div class="group">书库</div>
+        <router-link to="/admin/books"><i class="dot" />书籍管理</router-link>
+
         <div class="group">配置</div>
         <router-link to="/admin/security"><i class="dot" />加密健康度</router-link>
         <router-link to="/admin/tts"><i class="dot" />TTS 朗读</router-link>

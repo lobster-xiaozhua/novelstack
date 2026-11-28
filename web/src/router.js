@@ -27,6 +27,7 @@ const routes = [
     children: [
       { path: '', redirect: '/admin/overview' },
       { path: 'overview', name: 'admin-overview', component: () => import('./views/Overview.vue'), meta: { title: '概览' } },
+      { path: 'books', name: 'admin-books', component: () => import('./views/Books.vue'), meta: { title: '书籍管理' } },
       { path: 'security', name: 'admin-security', component: () => import('./views/Security.vue'), meta: { title: '加密健康度' } },
       { path: 'tts', name: 'admin-tts', component: () => import('./views/TTS.vue'), meta: { title: 'TTS 朗读' } },
       { path: 'search', name: 'admin-search', component: () => import('./views/Search.vue'), meta: { title: '搜索覆盖度' } },

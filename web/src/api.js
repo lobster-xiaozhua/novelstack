@@ -40,6 +40,58 @@ export const pruneCache = (body) =>
 
 export const getMe = () => request('/api/me')
 
+/** 管理端：列出当前用户的书籍（GET /api/books，session 鉴权）。 */
+export const getBooks = () => request('/api/books')
+
+/**
+ * 管理端：上传书籍（POST /api/books，multipart/form-data）。
+ *
+ * 用 XMLHttpRequest 而不是 fetch：fetch 没有上传进度事件，XHR 的
+ * upload.onprogress 才能驱动平滑进度条。字段顺序刻意把 title 等元数据
+ * 放在 file 之前——服务端用 MultipartReader 流式消费，file part 必须
+ * 在遍历到的当下读取，且要求 title 已先出现，否则直接 400。
+ *
+ * 服务端继续走原有的流式信封加密（io.TeeReader + 分块 encryptCounting），
+ * 明文不落盘、内存不累积；这里只负责把 File 原样送上去，不读取文件内容。
+ */
+export function uploadBook({ file, title, author, tags, description, onProgress }) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/books')
+    xhr.withCredentials = true // 同源会话 cookie
+    if (xhr.upload) {
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total)
+      }
+    }
+    xhr.onload = () => {
+      let body = null
+      try { body = JSON.parse(xhr.responseText) } catch (_) { /* 非 JSON */ }
+      if (xhr.status === 401) {
+        location.replace('/admin/login')
+        reject(new Error('unauthenticated'))
+        return
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body)
+        return
+      }
+      const msg = body && body.error ? body.error : `HTTP ${xhr.status}`
+      reject(new Error(msg))
+    }
+    xhr.onerror = () => reject(new Error('网络异常，上传已中断'))
+    xhr.onabort = () => reject(new Error('上传已取消'))
+
+    const form = new FormData()
+    form.append('title', title || file.name.replace(/\.txt$/i, ''))
+    form.append('author', author || '')
+    form.append('tags', tags || '')
+    form.append('description', description || '')
+    form.append('file', file, file.name)
+    xhr.send(form)
+  })
+}
+
 // 第九阶段：全链路遥测（只读聚合与明细）
 const telemetryQuery = (days) => {
   const d = Number(days) || 7
