@@ -57,3 +57,4 @@ secrets/*.jks
 
 # 发布用环境变量（含随机口令），绝不入库
 secrets/publish.env
+secrets/.kek-offline-backup-ok
