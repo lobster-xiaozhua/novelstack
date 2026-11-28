@@ -79,6 +79,8 @@ type stackOpts struct {
 	blocklistThreshold int
 	// 登录失败限流（次/分钟）；熔断测试需调高，否则先撞 429。
 	loginFailPerMinute int
+	// 客户端安装包路径；为空表示未配置下载口。
+	apkFile string
 }
 
 // buildStack 组装完整服务。可以重复调用以模拟容器重启（同一 dataDir）。
@@ -129,6 +131,7 @@ func buildStackWithCleanup(t *testing.T, dataDir string, opts stackOpts, cleanup
 		PrefetchMaxBytes:    8 << 20,
 		DeviceTokenTTL:      180 * 24 * time.Hour,
 		KekOfflineMarker:    filepath.Join(dataDir, ".kek-offline-backup-ok"),
+		AppAPKFile:          opts.apkFile,
 	}
 	database, err := db.Open(cfg.DBPath)
 	if err != nil {

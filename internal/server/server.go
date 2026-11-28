@@ -130,6 +130,10 @@ func (s *Server) routes() {
 	// 健康检查：不鉴权。
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 
+	// 第十三阶段：客户端安装包下载口。刻意不鉴权——Android 更新器是裸 GET，
+	// 而且校验靠 APP_APK_SHA256 的 SHA-256，不靠登录态。路径来自固定配置，非请求参数。
+	s.mux.HandleFunc("GET /download/novelstack.apk", s.handleAPKDownload)
+
 	// 认证。
 	s.mux.HandleFunc("POST /api/login", s.handleLogin)
 	// 退出登录只针对浏览器会话；device token 的撤销走 /api/admin/devices。

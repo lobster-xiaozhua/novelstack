@@ -1,10 +1,17 @@
 package server_test
 
 import (
+	"bytes"
+	"crypto/rand"
 	"encoding/json"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"novelstack/internal/cryptobox"
 )
 
 // 第八阶段验收：发现/足迹接口不得包含任何正文字段；收藏开关状态正确。
@@ -205,5 +212,61 @@ func TestAppVersionEndpoints(t *testing.T) {
 	code, _ = doBearer(t, http.MethodGet, s.ts.URL+"/api/app/version/latest-hash", dev.token, nil)
 	if code != http.StatusNotFound {
 		t.Fatalf("未配置哈希 status=%d 期望 404", code)
+	}
+}
+
+// TestPublicAPKDownload：客户端更新器是裸 GET（无鉴权），下载口必须对未登录可用，
+// 同时不能因为配了路径就暴露目录里的其它文件。
+func TestPublicAPKDownload(t *testing.T) {
+	requireFullStack(t)
+	dir := t.TempDir()
+	apk := []byte("fake apk payload for download test")
+	apkPath := filepath.Join(dir, "release.apk")
+	if err := os.WriteFile(apkPath, apk, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dataDir := t.TempDir()
+	kek := make([]byte, cryptobox.KeySize)
+	if _, err := rand.Read(kek); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "kek"), kek, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := buildStackWith(t, dataDir, stackOpts{apkFile: apkPath})
+	// 不带任何 cookie / device token。
+	resp, err := http.Get(st.ts.URL + "/download/novelstack.apk")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("download status = %d, want 200", resp.StatusCode)
+	}
+	if !bytes.Equal(body, apk) {
+		t.Fatalf("download body mismatch: %q", string(body))
+	}
+	if got := resp.Header.Get("Content-Type"); got != "application/vnd.android.package-archive" {
+		t.Fatalf("content-type = %q", got)
+	}
+	// Range 探测：Android 更新器会对前 100KB 发 Range 请求测速。
+	req2, _ := http.NewRequest(http.MethodGet, st.ts.URL+"/download/novelstack.apk", nil)
+	req2.Header.Set("Range", "bytes=0-9")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	b2, _ := io.ReadAll(resp2.Body)
+	if resp2.StatusCode != http.StatusPartialContent {
+		t.Fatalf("range status = %d, want 206", resp2.StatusCode)
+	}
+	if string(b2) != string(apk[:10]) {
+		t.Fatalf("range body = %q", string(b2))
 	}
 }

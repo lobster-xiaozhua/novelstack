@@ -2696,6 +2696,10 @@ Android 侧仍只能编译 + 单测验证，动效（Pager 回弹、Blur 镂空�
 - `ui/components/AppleUI.kt`：`ApplePrimaryButton` + `ApplePill`（四档色调）
 - `app/AppState.kt`、`ReaderApplication.kt`、`ui/App.kt`、`SettingsScreen.kt`、`LibraryScreen.kt`、`HistoryScreen.kt`
 
+**客户端分发**：`GET /download/novelstack.apk` 是唯一不鉴权的固定下载口，路径只从
+`APP_APK_FILE` 读（不接受请求参数，避免任意文件读取），支持 Range 供 Android 更新器测速；
+配合 `APP_MIRRORS` + `APP_APK_SHA256`，客户端先测速选镜像、下载后按 SHA-256 校验再安装。
+
 ### 23.9 已知限制
 
 1. **Android 动效未真机验收**：沙箱里没有模拟器，`HorizontalPager`、`BlendMode.Clear` 镂空、

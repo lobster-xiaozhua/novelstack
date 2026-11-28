@@ -139,6 +139,9 @@ type Config struct {
 	AppChangelog string
 	// APK 镜像 URL 列表：由环境变量 APP_MIRRORS 注入（逗号分隔），禁止在代码中写死。
 	AppMirrors []string
+	// 本机 APK 文件路径：仅用于 /download/novelstack.apk 这一个固定下载口，
+	// 不从请求参数取路径，避免任意文件读取。为空时该接口返回 404。
+	AppAPKFile string
 	// 最新 APK 的 SHA-256（hex）：客户端测速下载后必须校验该值才允许安装。
 	AppAPKSHA256 string
 
@@ -258,6 +261,7 @@ func FromEnv() (*Config, error) {
 		AppVersion:   envStr("APP_VERSION", "0.1.0"),
 		AppChangelog: envStr("APP_CHANGELOG", ""),
 		AppMirrors:   splitList(envStr("APP_MIRRORS", "")),
+		AppAPKFile:   envStr("APP_APK_FILE", ""),
 		AppAPKSHA256: strings.ToLower(strings.TrimSpace(envStr("APP_APK_SHA256", ""))),
 
 		PurgeRules:         parseRules(envStr("REGEX_PURGE_RULES", "")),

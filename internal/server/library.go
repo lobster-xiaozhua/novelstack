@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"novelstack/internal/books"
@@ -216,6 +218,30 @@ type appVersionResponse struct {
 	Version   string   `json:"version"`
 	Changelog string   `json:"changelog"`
 	Mirrors   []string `json:"mirrors"`
+}
+
+// handleAPKDownload 处理 GET /download/novelstack.apk。
+//
+// 这是唯一一个「服务端主动暴露文件」的口子，因此限制极严：
+//   - 路径只从 APP_APK_FILE 读，永远不接请求里的 path/name 参数；
+//   - 未配置或文件不存在直接 404，不回退到目录列表；
+//   - 用 http.ServeFile，天然支持 Range（Android 更新器会先探测前 100KB）。
+func (s *Server) handleAPKDownload(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSpace(s.cfg.AppAPKFile)
+	if path == "" {
+		writeErr(w, http.StatusNotFound, "apk not configured")
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		writeErr(w, http.StatusNotFound, "apk not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/vnd.android.package-archive")
+	w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+	w.Header().Set("Content-Disposition", "attachment; filename=novelstack.apk")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	http.ServeFile(w, r, path)
 }
 
 // handleAppVersion 处理 GET /api/app/version。镜像列表来自配置（环境变量注入）。
