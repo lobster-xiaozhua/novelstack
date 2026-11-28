@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light">
+<meta name="theme-color" content="#F2F2F7">
+<title>novelstack · 登录</title>
+<style>
+  :root { --bg:#F2F2F7; --card:#FFF; --label:#1C1C1E; --secondary:#8E8E93;
+          --blue:#007AFF; --red:#FF3B30; --hairline:rgba(60,60,67,.12);
+          --sq9:url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Cpath d='M64.00 32.00L64.00 48.00L63.96 53.29L63.85 55.35L63.67 56.88L63.41 58.13L63.07 59.18L62.65 60.09L62.15 60.88L61.57 61.57L60.88 62.15L60.09 62.65L59.18 63.07L58.13 63.41L56.88 63.67L55.35 63.85L53.29 63.96L48.00 64.00L16.00 64.00L10.71 63.96L8.65 63.85L7.12 63.67L5.87 63.41L4.82 63.07L3.91 62.65L3.12 62.15L2.43 61.57L1.85 60.88L1.35 60.09L0.93 59.18L0.59 58.13L0.33 56.88L0.15 55.35L0.04 53.29L0.00 48.00L0.00 16.00L0.04 10.71L0.15 8.65L0.33 7.12L0.59 5.87L0.93 4.82L1.35 3.91L1.85 3.12L2.43 2.43L3.12 1.85L3.91 1.35L4.82 0.93L5.87 0.59L7.12 0.33L8.65 0.15L10.71 0.04L16.00 0.00L48.00 0.00L53.29 0.04L55.35 0.15L56.88 0.33L58.13 0.59L59.18 0.93L60.09 1.35L60.88 1.85L61.57 2.43L62.15 3.12L62.65 3.91L63.07 4.82L63.41 5.87L63.67 7.12L63.85 8.65L63.96 10.71L64.00 16.00Z' fill='black'/%3E%3C/svg%3E");
+          --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Noto Sans SC","Segoe UI",sans-serif; }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);
+       color:var(--label);font:15px/1.5 var(--sans);-webkit-font-smoothing:antialiased;padding:20px}
+  .card{position:relative;width:min(400px,100%);padding:30px 26px 24px;isolation:isolate}
+  .card::before{content:"";position:absolute;inset:0;z-index:-1;background:var(--card);
+       border-radius:16px;-webkit-mask-box-image:var(--sq9) 16 fill / 16px stretch;mask-border:var(--sq9) 16 fill / 16px stretch;
+       box-shadow:inset 0 0 0 .5px var(--hairline)}
+  .logo{width:40px;height:40px;display:grid;place-items:center;background:var(--blue);color:#fff;
+       font-weight:700;font-size:15px;letter-spacing:-.5px;
+       border-radius:12px;-webkit-mask-box-image:var(--sq9) 16 fill / 12px stretch;mask-border:var(--sq9) 16 fill / 12px stretch}
+  h1{margin:16px 0 2px;font-size:24px;font-weight:600;letter-spacing:-.02em}
+  p.sub{margin:0 0 22px;color:var(--secondary);font-size:13px}
+  label{display:block;margin:14px 0 6px;font-size:12px;font-weight:600;color:var(--secondary);
+        letter-spacing:.03em;text-transform:uppercase}
+  input{width:100%;height:44px;padding:0 14px;background:var(--bg);border:0;outline:none;
+        font-size:15px;box-shadow:inset 0 0 0 .5px var(--hairline);
+        border-radius:12px;-webkit-mask-box-image:var(--sq9) 16 fill / 12px stretch;mask-border:var(--sq9) 16 fill / 12px stretch;
+        transition:box-shadow .18s,background .18s}
+  input:focus{background:#fff;box-shadow:inset 0 0 0 1px var(--blue)}
+  button{width:100%;height:46px;margin-top:22px;border:0;background:var(--blue);color:#fff;
+        font-size:15px;font-weight:600;cursor:pointer;
+        border-radius:12px;-webkit-mask-box-image:var(--sq9) 16 fill / 12px stretch;mask-border:var(--sq9) 16 fill / 12px stretch;
+        transition:opacity .18s,transform .18s}
+  button:hover{opacity:.9}
+  button:active{transform:scale(.98)}
+  button:disabled{opacity:.5;cursor:progress}
+  .err{display:none;margin-top:14px;padding:10px 12px;font-size:13px;color:#B3261E;
+       background:rgba(255,59,48,.07);box-shadow:inset 0 0 0 .5px rgba(255,59,48,.24)}
+  .foot{margin-top:18px;font-size:11.5px;color:var(--secondary);line-height:1.6}
+  .ok{display:none;margin-top:14px;font-size:13px;color:var(--secondary)}
+</style>
+</head>
+<body>
+<form class="card" id="f" autocomplete="on">
+  <div class="logo">NS</div>
+  <h1>novelstack</h1>
+  <p class="sub">__AREA__ · 单用户</p>
+  <label for="u">用户名</label>
+  <input id="u" name="username" autocomplete="username" required autofocus>
+  <label for="p">口令</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  <button id="b" type="submit">登录</button>
+  <div class="err" id="e"></div>
+  <div class="ok" id="o">正在通过客户端免密登录…</div>
+  <div class="foot">会话 Cookie 为 HttpOnly + SameSite=Strict。<br>客户端免密链接 60 秒内单次有效。</div>
+</form>
+<script>
+(function () {
+  var DEFAULT_NEXT = '__NEXT__';
+  var params = new URLSearchParams(location.search);
+  var next = safeNext(params.get('next')) || DEFAULT_NEXT;
+  var grant = params.get('grant') || '';
+  var f = document.getElementById('f');
+  var b = document.getElementById('b');
+  var e = document.getElementById('e');
+  var o = document.getElementById('o');
+
+  function safeNext(v) {
+    // 用 URL 解析校验同源，拒绝 //evil.com、反斜杠变体与绝对外链。
+    if (!v) return '';
+    try {
+      var u = new URL(v, location.origin);
+      if (u.origin !== location.origin) return '';
+      return u.pathname + u.search + u.hash;
+    } catch (_) { return ''; }
+  }
+  function showErr(msg) {
+    e.textContent = msg;
+    e.style.display = 'block';
+  }
+
+  if (grant) {
+    b.disabled = true;
+    o.style.display = 'block';
+    fetch('/api/login/grant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ grant: grant })
+    }).then(function (res) {
+      if (!res.ok) throw new Error(res.status === 429 ? '尝试过于频繁' : '票据已失效，请重新打开');
+      location.replace(next);
+    }).catch(function (err) {
+      o.style.display = 'none';
+      b.disabled = false;
+      showErr(err.message || '免密登录失败');
+    });
+  }
+
+  f.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    b.disabled = true;
+    e.style.display = 'none';
+    fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: document.getElementById('u').value,
+        password: document.getElementById('p').value
+      })
+    }).then(function (res) {
+      if (res.ok) { location.replace(next); return; }
+      showErr(res.status === 429 ? '尝试过于频繁，请稍后再试' : '用户名或口令错误');
+    }).catch(function () {
+      showErr('网络错误，请重试');
+    }).finally(function () { b.disabled = false; });
+  });
+})();
+</script>
+</body>
+</html>

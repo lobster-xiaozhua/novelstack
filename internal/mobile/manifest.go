@@ -179,9 +179,11 @@ type Progress struct {
 	UpdatedAt    string  `json:"updated_at"`
 }
 
-// PutProgress 写入进度（最后写入胜）。
-// 单用户场景下用 (owner_id, book_id) 作主键；不同设备的写入互相覆盖，
-// 与「最后写入胜」的约定一致，不做版本比较。
+// PutProgress 写入进度（位置优先）。
+//
+// 历史语义是「最后写入胜」，但多端阅读时晚到的回翻会把另一端的进度拽回去。
+// 第十二阶段改为：只有位置更靠后（章节优先、同章比字符偏移）才覆盖，
+// 否则保留库内记录并把它返回给调用方，让客户端能立即对齐到正确位置。
 func PutProgress(ctx context.Context, db *sql.DB, ownerID, bookID string, p Progress, deviceID string) (*Progress, error) {
 	if p.ChapterIndex < 0 || p.CharOffset < 0 || p.Percent < 0 || p.Percent > 1 {
 		return nil, ErrProgressInvalid
@@ -193,6 +195,14 @@ func PutProgress(ctx context.Context, db *sql.DB, ownerID, bookID string, p Prog
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, books.ErrNotFound
 		}
+		return nil, err
+	}
+	// 已有记录更靠后：不覆盖，直接返回它（客户端据此校准本地位置）。
+	if cur, err := GetProgress(ctx, db, ownerID, bookID); err == nil {
+		if !(Position{p.ChapterIndex, p.CharOffset}).Ahead(Position{cur.ChapterIndex, cur.CharOffset}) {
+			return cur, nil
+		}
+	} else if !errors.Is(err, books.ErrNotFound) {
 		return nil, err
 	}
 	ts := time.Now().UTC().Format(time.RFC3339Nano)

@@ -15,7 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -32,6 +31,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
+import com.novelstack.reader.ui.components.SquircleCard
 import com.novelstack.reader.app.Screen
 import com.novelstack.reader.model.ReadingDay
 import com.novelstack.reader.model.ReadingStats
@@ -118,12 +118,7 @@ private fun KpiRow(s: ReadingStats) {
 
 @Composable
 private fun KpiCard(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        ),
-    ) {
+    SquircleCard(modifier = modifier) {
         Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 12.dp)) {
             Text(
                 label,

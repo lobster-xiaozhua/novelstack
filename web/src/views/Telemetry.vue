@@ -156,11 +156,11 @@ function firstLine(name) {
           </thead>
           <tbody>
             <tr v-for="s in slow" :key="s.name">
-              <td class="ellip">{{ s.name || '(未命名)' }}</td>
-              <td class="num">{{ s.count }}</td>
-              <td class="num">{{ ms(s.avg_ms) }}</td>
-              <td class="num">{{ ms(s.p95_ms) }}</td>
-              <td class="num">{{ ms(s.max_ms) }}</td>
+              <td class="ellip" data-label="章节">{{ s.name || '(未命名)' }}</td>
+              <td class="num" data-label="次数">{{ s.count }}</td>
+              <td class="num" data-label="均值">{{ ms(s.avg_ms) }}</td>
+              <td class="num" data-label="P95">{{ ms(s.p95_ms) }}</td>
+              <td class="num" data-label="峰值">{{ ms(s.max_ms) }}</td>
             </tr>
           </tbody>
         </table>

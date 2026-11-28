@@ -74,9 +74,9 @@ const d = computed(() => data.value)
           <thead><tr><th>书籍</th><th class="num">片段</th><th class="num">占用</th></tr></thead>
           <tbody>
             <tr v-for="b in d.tts.cache.by_book" :key="b.book_id">
-              <td class="ellip">{{ b.title || b.book_id }}</td>
-              <td class="num">{{ b.segments }}</td>
-              <td class="num">{{ bytes(b.bytes) }}</td>
+              <td class="ellip" data-label="书籍">{{ b.title || b.book_id }}</td>
+              <td class="num" data-label="片段">{{ b.segments }}</td>
+              <td class="num" data-label="占用">{{ bytes(b.bytes) }}</td>
             </tr>
           </tbody>
         </table>

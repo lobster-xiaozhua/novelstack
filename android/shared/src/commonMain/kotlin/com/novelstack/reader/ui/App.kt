@@ -26,6 +26,7 @@ import com.novelstack.reader.app.AppState
 import com.novelstack.reader.app.NetworkStatus
 import com.novelstack.reader.app.Screen
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun NovelApp(state: AppState) {
     val screen by state.screen.collectAsState()
@@ -39,18 +40,25 @@ fun NovelApp(state: AppState) {
     }
 
     NovelTheme(dark = isDarkTheme(settings.theme, systemDark)) {
+        // 全局关闭 Material 的方形水波纹：交互反馈统一由 ApplePressable 的
+        // 缩放 + 浅蓝叠加承担（见 components/AppleUI.kt）。
+        androidx.compose.runtime.CompositionLocalProvider(
+            androidx.compose.material3.LocalRippleConfiguration provides null,
+        ) {
         Box(modifier = Modifier.fillMaxSize()) {
             when (val s = screen) {
                 Screen.Login -> LoginScreen(state)
                 Screen.Search -> SearchScreen(state)
                 Screen.ServerSettings -> ServerSettingsScreen(state)
                 is Screen.Reader -> ReaderScreen(state, s.bookId)
+                is Screen.WebConsole -> WebConsoleScreen(s.url) { state.screen.value = Screen.Settings }
                 else -> MainTabs(state, s)
             }
             // 应用锁：验证未通过时全屏模糊遮罩，内容不可见也不可操作。
             if (locked) {
                 AppLockOverlay(state)
             }
+        }
         }
     }
 }
@@ -133,13 +141,27 @@ private fun MainTabs(state: AppState, current: Screen) {
             Triple(Screen.History, "足迹", "◷"),
             Triple(Screen.Settings, "设置", "⚙"),
         )
-        NavigationBar {
+        androidx.compose.material3.HorizontalDivider(
+            thickness = AppleTokens.HAIRLINE_DP.dp,
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+        NavigationBar(
+            containerColor = MaterialTheme.colorScheme.surface,
+            tonalElevation = 0.dp,
+        ) {
             tabs.forEach { (target, label, glyph) ->
                 NavigationBarItem(
                     selected = current == target,
                     onClick = { state.screen.value = target },
                     icon = { Text(glyph, style = MaterialTheme.typography.titleMedium) },
-                    label = { Text(label) },
+                    label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                    colors = androidx.compose.material3.NavigationBarItemDefaults.colors(
+                        selectedIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                        indicatorColor = AppleTokens.SelectionBg,
+                        unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
                 )
             }
         }

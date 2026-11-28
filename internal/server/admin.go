@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"io/fs"
 	"net/http"
 	"path/filepath"
@@ -70,10 +69,7 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/admin", http.StatusSeeOther)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(w, adminLoginHTML)
+	s.serveLoginPage(w, "/admin")
 }
 
 // handleAdminAsset 提供构建产物（JS/CSS/字体）。资源本身不含数据，允许未登录加载。
@@ -291,69 +287,3 @@ func (s *Server) handleAuditFiltered(w http.ResponseWriter, r *http.Request, id 
 	s.audit.Record(r.Context(), id.username, id.ip, "audit_view", "", "ok", "limit="+strconv.Itoa(limit))
 	writeJSON(w, http.StatusOK, entries)
 }
-
-const adminLoginHTML = `<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex">
-<title>novelstack · 登录</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
-         background: #0b0d10; color: #e6e8eb;
-         font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", "Noto Sans SC", sans-serif; }
-  .card { width: min(380px, calc(100vw - 32px)); padding: 28px; border-radius: 14px;
-          background: #14171c; border: 1px solid #232a33; box-shadow: 0 20px 60px rgba(0,0,0,.45); }
-  h1 { margin: 0 0 4px; font-size: 18px; letter-spacing: .2px; }
-  p.sub { margin: 0 0 22px; color: #8b949e; font-size: 13px; }
-  label { display: block; margin: 14px 0 6px; font-size: 12px; color: #a9b1ba; letter-spacing: .04em; text-transform: uppercase; }
-  input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2c343e;
-          background: #0f1216; color: #e6e8eb; font-size: 14px; outline: none; }
-  input:focus { border-color: #4c8dff; box-shadow: 0 0 0 3px rgba(76,141,255,.15); }
-  button { width: 100%; margin-top: 20px; padding: 11px; border: 0; border-radius: 8px;
-           background: #4c8dff; color: #06101f; font-weight: 650; font-size: 14px; cursor: pointer; }
-  button:disabled { opacity: .6; cursor: progress; }
-  .err { margin-top: 14px; padding: 9px 11px; border-radius: 8px; font-size: 13px;
-         background: rgba(255,87,87,.1); border: 1px solid rgba(255,87,87,.35); color: #ff9d9d; display: none; }
-  .foot { margin-top: 18px; font-size: 12px; color: #6e7681; }
-</style>
-</head>
-<body>
-<form class="card" id="f" autocomplete="on">
-  <h1>novelstack</h1>
-  <p class="sub">私人阅读站 · 运营控制台</p>
-  <label for="u">用户名</label>
-  <input id="u" name="username" autocomplete="username" required autofocus>
-  <label for="p">口令</label>
-  <input id="p" name="password" type="password" autocomplete="current-password" required>
-  <button id="b" type="submit">登录</button>
-  <div class="err" id="e"></div>
-  <div class="foot">会话 Cookie 为 HttpOnly + SameSite=Strict，24 小时过期。</div>
-</form>
-<script>
-document.getElementById('f').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const b = document.getElementById('b'), e = document.getElementById('e');
-  b.disabled = true; e.style.display = 'none';
-  try {
-    const res = await fetch('/api/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        username: document.getElementById('u').value,
-        password: document.getElementById('p').value
-      })
-    });
-    if (res.ok) { location.replace('/admin'); return; }
-    e.textContent = res.status === 429 ? '尝试过于频繁，请稍后再试。' : '用户名或口令错误。';
-    e.style.display = 'block';
-  } catch (_) {
-    e.textContent = '网络错误，请重试。'; e.style.display = 'block';
-  } finally { b.disabled = false; }
-});
-</script>
-</body>
-</html>`

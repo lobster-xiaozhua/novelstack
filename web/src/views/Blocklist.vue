@@ -31,6 +31,12 @@ function remain(iso) {
   return `剩 ${h} 小时 ${m % 60} 分`
 }
 
+function stateOf(e) {
+  if (e.active) return { cls: 'on', text: '封禁中' }
+  if (e.unblocked_at) return { cls: 'off', text: '已解封' }
+  return { cls: 'off', text: '已到期' }
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -72,40 +78,61 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
         <h1>IP 防护 · 黑名单</h1>
         <div class="sub">
           1 小时内累计 10 次 401/404 自动封禁 24 小时 · 状态：
-          <b :class="enabled ? 'ok' : 'off'">{{ enabled ? '已开启' : '已停用' }}</b>
+          <b :class="enabled ? 'ok' : 'dim'">{{ enabled ? '已开启' : '已停用' }}</b>
           · 当前封禁 {{ activeCount }} 个 IP
         </div>
       </div>
-      <button class="btn ghost" :disabled="loading" @click="load">刷新</button>
+      <div class="actions">
+        <button class="btn ghost" :disabled="loading" @click="load">刷新</button>
+      </div>
     </header>
 
-    <div v-if="error" class="alert">{{ error }}</div>
+    <div v-if="error" class="error">{{ error }}</div>
 
     <section class="card">
-      <div class="empty" v-if="!loading && shown.length === 0">
+      <div v-if="loading && shown.length === 0" class="loading">正在读取…</div>
+      <div v-else-if="shown.length === 0" class="empty">
         暂无记录。熔断触发后，来源 IP 会出现在这里。
       </div>
-      <div v-else class="list">
-        <div class="row" v-for="e in shown" :key="e.ip">
-          <div class="ip-col">
-            <code>{{ e.ip }}</code>
-            <span class="tag" :class="e.active ? 'on' : 'off'">{{ e.active ? '封禁中' : (e.unblocked_at ? '已解封' : '已到期') }}</span>
-          </div>
-          <div class="meta">
-            <span>触发 {{ e.hits }} 次</span>
-            <span>原因 {{ e.reason }}</span>
-            <span>{{ fmt(e.created_at) }}</span>
-            <span v-if="e.active" class="remain">{{ remain(e.expires_at) }}</span>
-            <span v-else>解封 {{ fmt(e.unblocked_at || e.expires_at) }}</span>
-          </div>
-          <button
-            v-if="e.active"
-            class="btn ghost"
-            :disabled="busy === e.ip"
-            @click="doUnblock(e.ip)"
-          >{{ busy === e.ip ? '处理中…' : '解封' }}</button>
-        </div>
-      </div>
+      <table v-else class="tbl">
+        <thead>
+          <tr>
+            <th>IP</th>
+            <th>状态</th>
+            <th class="num">触发</th>
+            <th>原因</th>
+            <th>封禁时间</th>
+            <th>到期 / 解封</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="e in shown" :key="e.ip">
+            <td class="mono" data-label="IP">{{ e.ip }}</td>
+            <td data-label="状态">
+              <span class="pill" :class="stateOf(e).cls">{{ stateOf(e).text }}</span>
+            </td>
+            <td class="num" data-label="触发">{{ e.hits }} 次</td>
+            <td data-label="原因">{{ e.reason || '—' }}</td>
+            <td class="dim" data-label="封禁时间">{{ fmt(e.created_at) }}</td>
+            <td data-label="到期 / 解封">
+              <template v-if="e.active">
+                <span class="warn">{{ remain(e.expires_at) }}</span>
+              </template>
+              <template v-else>{{ fmt(e.unblocked_at || e.expires_at) }}</template>
+            </td>
+            <td data-label="操作">
+              <button
+                v-if="e.active"
+                class="btn ghost"
+                :disabled="busy === e.ip"
+                @click="doUnblock(e.ip)"
+              >{{ busy === e.ip ? '处理中…' : '解封' }}</button>
+              <span v-else class="dim">—</span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
     </section>
 
     <p class="note">
@@ -115,20 +142,8 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 </template>
 
 <style scoped>
-.ok { color: #16a34a; }
-.off { color: #94a3b8; }
-.alert { color: #fca5a5; background: #7f1d1d33; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; }
-.card { background: #ffffff08; border: 1px solid #ffffff14; border-radius: 12px; padding: 16px; }
-.empty { color: #94a3b8; padding: 32px; text-align: center; }
-.list { display: flex; flex-direction: column; }
-.row { display: flex; align-items: center; gap: 12px; padding: 12px 4px; border-bottom: 1px solid #ffffff10; }
-.row:last-child { border-bottom: 0; }
-.ip-col { min-width: 210px; display: flex; align-items: center; gap: 8px; }
-.ip-col code { color: #93c5fd; font-size: 13px; }
-.tag { font-size: 11px; padding: 2px 7px; border-radius: 999px; }
-.tag.on { background: #7f1d1d; color: #fecaca; }
-.tag.off { background: #ffffff14; color: #94a3b8; }
-.meta { flex: 1; display: flex; flex-wrap: wrap; gap: 14px; color: #cbd5e1; font-size: 12px; }
-.remain { color: #fbbf24; }
-.note { color: #94a3b8; font-size: 12px; margin-top: 12px; line-height: 1.7; }
+.ok { color: var(--green); }
+.dim { color: var(--secondary); }
+.warn { color: var(--orange); font-variant-numeric: tabular-nums; }
+.note { margin-top: 14px; line-height: 1.7; }
 </style>

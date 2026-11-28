@@ -5,6 +5,9 @@ import com.novelstack.reader.model.ApiException
 import com.novelstack.reader.model.AppVersion
 import com.novelstack.reader.model.AudioManifest
 import com.novelstack.reader.model.DeviceAuth
+import io.ktor.http.encodeURLParameter
+import com.novelstack.reader.model.SyncProgressResponse
+import com.novelstack.reader.model.WebGrantDto
 import com.novelstack.reader.model.DiscoverResponse
 import com.novelstack.reader.model.FavoriteRequest
 import com.novelstack.reader.model.FavoriteResponse
@@ -128,6 +131,26 @@ class NovelApi(
             setBody(json.encodeToString(ProgressRequest.serializer(), req))
         }
         return json.decodeFromString(ProgressResponse.serializer(), resp.textOrThrow())
+    }
+
+    /** 拉取增量进度（since 为空表示全量）。 */
+    suspend fun syncProgress(since: String?): SyncProgressResponse {
+        val q = if (since.isNullOrBlank()) "" else "?since=" + since.encodeURLParameter()
+        val resp = client.get("${currentBaseUrl()}/api/sync/progress$q") { auth() }
+        return json.decodeFromString(SyncProgressResponse.serializer(), resp.textOrThrow())
+    }
+
+    /**
+     * 申请 WebView 一次性登录票据（60 秒、单次）。
+     * 服务端返回的 url 形如 `https://host/admin/login?grant=...`。
+     */
+    suspend fun webGrant(): WebGrantDto {
+        val resp = client.post("${currentBaseUrl()}/api/device/web-grant") {
+            auth()
+            contentType(ContentType.Application.Json)
+            setBody("{}")
+        }
+        return json.decodeFromString(WebGrantDto.serializer(), resp.textOrThrow())
     }
 
     suspend fun getProgress(bookId: String): ProgressDto? {

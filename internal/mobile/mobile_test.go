@@ -119,7 +119,7 @@ func TestManifestWrapsDEK(t *testing.T) {
 	}
 }
 
-func TestProgressLastWriteWins(t *testing.T) {
+func TestProgressKeepsFurthestPosition(t *testing.T) {
 	d := newDB(t)
 	ctx := context.Background()
 	insertBook(t, d, "b1", "书一", 1)
@@ -136,7 +136,21 @@ func TestProgressLastWriteWins(t *testing.T) {
 		t.Fatalf("get: %v", err)
 	}
 	if got.ChapterIndex != 2 || got.CharOffset != 30 || got.DeviceID != "dev-b" || got.Title != "书一" {
-		t.Fatalf("last write should win: %+v", got)
+		t.Fatalf("further position should win: %+v", got)
+	}
+
+	// 更晚但更靠前的写入不得覆盖（多端同步回翻场景）。
+	time.Sleep(2 * time.Millisecond)
+	back, err := PutProgress(ctx, d, "admin", "b1", Progress{ChapterIndex: 0, CharOffset: 1, Percent: 0.02}, "dev-c")
+	if err != nil {
+		t.Fatalf("put back: %v", err)
+	}
+	if back.ChapterIndex != 2 || back.CharOffset != 30 {
+		t.Fatalf("earlier position overwrote: %+v", back)
+	}
+	again, _ := GetProgress(ctx, d, "admin", "b1")
+	if again.ChapterIndex != 2 || again.DeviceID != "dev-b" {
+		t.Fatalf("store changed by earlier position: %+v", again)
 	}
 
 	// 越界字段

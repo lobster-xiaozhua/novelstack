@@ -7,39 +7,105 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
 
-private val DarkScheme = darkColorScheme(
-    primary = Color(0xFF8FB4D9),
-    onPrimary = Color(0xFF0B1620),
-    secondary = Color(0xFF9BB7A8),
-    background = Color(0xFF0E1116),
-    onBackground = Color(0xFFDCE3EC),
-    surface = Color(0xFF161C24),
-    onSurface = Color(0xFFDCE3EC),
-    surfaceVariant = Color(0xFF1E2630),
-    onSurfaceVariant = Color(0xFFA9B6C6),
-    outline = Color(0xFF38424F),
-    error = Color(0xFFE08A8A),
-)
+/**
+ * 苹果风设计令牌。
+ *
+ * 规则（第十一阶段）：
+ *  - 页面底色纯浅灰 #F2F2F7，卡片纯白 #FFFFFF；
+ *  - 白卡在灰底上靠 0.5dp 极细边框显形，不用阴影、不用毛玻璃；
+ *  - 主标题 #1C1C1E，辅助文字 #8E8E93，强调色 iOS 蓝 #007AFF，危险红 #FF3B30；
+ *  - 选中态底色 #E6F0FF + 文字变蓝，替代方形水波纹。
+ */
+object AppleTokens {
+    val PageBg = Color(0xFFF2F2F7)
+    val CardBg = Color(0xFFFFFFFF)
+    val Label = Color(0xFF1C1C1E)
+    val SecondaryLabel = Color(0xFF8E8E93)
+    val TertiaryLabel = Color(0xFFC7C7CC)
+    val Blue = Color(0xFF007AFF)
+    val Red = Color(0xFFFF3B30)
+    val Green = Color(0xFF34C759)
+    val Orange = Color(0xFFFF9500)
+    val SelectionBg = Color(0xFFE6F0FF)
+
+    /** 分割线：60,60,67 @ 12%。 */
+    val Hairline = Color(0x1F3C3C43)
+
+    /** 极细边框宽度（dp）：0.5dp 在 xhdpi 以上正好是 1 物理像素级。 */
+    const val HAIRLINE_DP = 0.5f
+
+    // 深色模式仍保留层级，但同样不用阴影/毛玻璃。
+    val DarkPageBg = Color(0xFF000000)
+    val DarkCardBg = Color(0xFF1C1C1E)
+    val DarkLabel = Color(0xFFFFFFFF)
+    val DarkSecondary = Color(0xFF8E8E93)
+    val DarkHairline = Color(0x33EBEBF5)
+    val DarkBlue = Color(0xFF0A84FF)
+    val DarkSelectionBg = Color(0xFF0A2540)
+}
 
 private val LightScheme = lightColorScheme(
-    primary = Color(0xFF2F5D8A),
+    primary = AppleTokens.Blue,
     onPrimary = Color.White,
-    secondary = Color(0xFF3F6B57),
-    background = Color(0xFFF7F6F3),
-    onBackground = Color(0xFF1B1E22),
-    surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF1B1E22),
-    surfaceVariant = Color(0xFFEDEAE4),
-    onSurfaceVariant = Color(0xFF4A5058),
-    outline = Color(0xFFC9C4BB),
+    secondary = AppleTokens.Blue,
+    onSecondary = Color.White,
+    background = AppleTokens.PageBg,
+    onBackground = AppleTokens.Label,
+    surface = AppleTokens.CardBg,
+    onSurface = AppleTokens.Label,
+    surfaceVariant = AppleTokens.PageBg,
+    onSurfaceVariant = AppleTokens.SecondaryLabel,
+    outline = Color(0xFFC7C7CC),
+    outlineVariant = AppleTokens.Hairline,
+    error = AppleTokens.Red,
+    onError = Color.White,
+)
+
+private val DarkScheme = darkColorScheme(
+    primary = AppleTokens.DarkBlue,
+    onPrimary = Color.White,
+    secondary = AppleTokens.DarkBlue,
+    onSecondary = Color.White,
+    background = AppleTokens.DarkPageBg,
+    onBackground = AppleTokens.DarkLabel,
+    surface = AppleTokens.DarkCardBg,
+    onSurface = AppleTokens.DarkLabel,
+    surfaceVariant = AppleTokens.DarkCardBg,
+    onSurfaceVariant = AppleTokens.DarkSecondary,
+    outline = Color(0xFF48484A),
+    outlineVariant = AppleTokens.DarkHairline,
+    error = Color(0xFFFF453A),
+    onError = Color.White,
+)
+
+/**
+ * 排版：SF / 系统字体，标题 SemiBold、正文 Regular。
+ * 行高按 iOS 的阅读节奏给（正文 1.45 倍），中文长文不挤。
+ */
+private val AppleTypography = Typography(
+    headlineLarge = TextStyle(fontSize = 30.sp, lineHeight = 36.sp, fontWeight = FontWeight.Bold),
+    headlineMedium = TextStyle(fontSize = 24.sp, lineHeight = 30.sp, fontWeight = FontWeight.SemiBold),
+    headlineSmall = TextStyle(fontSize = 20.sp, lineHeight = 26.sp, fontWeight = FontWeight.SemiBold),
+    titleLarge = TextStyle(fontSize = 18.sp, lineHeight = 24.sp, fontWeight = FontWeight.SemiBold),
+    titleMedium = TextStyle(fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium),
+    titleSmall = TextStyle(fontSize = 14.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
+    bodyLarge = TextStyle(fontSize = 16.sp, lineHeight = 23.sp, fontWeight = FontWeight.Normal),
+    bodyMedium = TextStyle(fontSize = 15.sp, lineHeight = 21.sp, fontWeight = FontWeight.Normal),
+    bodySmall = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Normal),
+    labelLarge = TextStyle(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium),
+    labelMedium = TextStyle(fontSize = 13.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium),
+    labelSmall = TextStyle(fontSize = 11.sp, lineHeight = 15.sp, fontWeight = FontWeight.Normal),
 )
 
 @Composable
 fun NovelTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (dark) DarkScheme else LightScheme,
-        typography = Typography(),
+        typography = AppleTypography,
         content = content,
     )
 }

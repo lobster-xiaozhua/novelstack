@@ -1,7 +1,6 @@
 package com.novelstack.reader.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,33 +13,50 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import com.novelstack.reader.app.AppState
 import com.novelstack.reader.app.Screen
 import com.novelstack.reader.db.Books
+import com.novelstack.reader.ui.components.AppleCheckbox
+import com.novelstack.reader.ui.components.ApplePressable
+import com.novelstack.reader.ui.components.BottomActionBar
+import com.novelstack.reader.ui.components.CapsuleSearchField
+import com.novelstack.reader.ui.components.DestructiveTextButton
+import com.novelstack.reader.ui.components.RowContent
+import com.novelstack.reader.ui.components.SelectHeader
+import com.novelstack.reader.ui.components.SquircleCard
 
+/**
+ * 书架：iOS 分组内嵌列表 + 长按多选。
+ *
+ * 多选态下顶部标题换成「已选择 X 项」，每行左侧滑出正圆复选框，
+ * 底部弹入操作栏。点行切换选中，而不是打开书。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LibraryScreen(state: AppState) {
@@ -51,19 +67,79 @@ fun LibraryScreen(state: AppState) {
     val error by state.error.collectAsState()
     val offline by state.offline.collectAsState()
 
-    // 离线模式只展示「至少有一章缓存」的书，避免点进去一片空白。
+    var query by remember { mutableStateOf("") }
+    var selecting by remember { mutableStateOf(false) }
+    val selected = remember { mutableStateListOf<String>() }
+
+    fun exitSelection() {
+        selecting = false
+        selected.clear()
+    }
+
+    // 过滤结果用 derivedStateOf 缓存：滚动/多选重组时不会重复扫描整个书架。
+    val filtered by remember {
+        androidx.compose.runtime.derivedStateOf {
+            val available = state.visibleBooks(books)
+            val q = query.trim()
+            available
+                .filter { !favOnly || it.is_favorite != 0L }
+                .filter {
+                    q.isEmpty() ||
+                        it.title.contains(q, ignoreCase = true) ||
+                        it.author.contains(q, ignoreCase = true)
+                }
+        }
+    }
     val available = state.visibleBooks(books)
-    val shown = if (favOnly) available.filter { it.is_favorite != 0L } else available
+    val queryText = query.trim()
+    val shown = filtered
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text("书架") },
-                actions = {
-                    TextButton(onClick = { state.sync() }, enabled = !busy) { Text("同步") }
-                    TextButton(onClick = { state.screen.value = Screen.Search }) { Text("搜索") }
-                },
-            )
+            Column {
+                if (selecting) {
+                    SelectHeader(count = selected.size, onCancel = { exitSelection() })
+                } else {
+                    TopAppBar(
+                        title = { Text("书架", fontWeight = FontWeight.SemiBold) },
+                        actions = {
+                            androidx.compose.material3.TextButton(onClick = { state.sync() }, enabled = !busy) {
+                                Text("同步")
+                            }
+                            androidx.compose.material3.TextButton(onClick = { state.screen.value = Screen.Search }) {
+                                Text("搜索")
+                            }
+                        },
+                        colors = TopAppBarDefaults.topAppBarColors(
+                            containerColor = MaterialTheme.colorScheme.background,
+                        ),
+                    )
+                }
+            }
+        },
+        bottomBar = {
+            BottomActionBar(visible = selecting) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    DestructiveTextButton(
+                        text = "移除本地缓存（${selected.size}）",
+                        enabled = selected.isNotEmpty(),
+                        onClick = {
+                            state.removeLocalBooks(selected.toList())
+                            exitSelection()
+                        },
+                    )
+                    Text(
+                        "仅删本地副本",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         },
     ) { pad ->
         Column(modifier = Modifier.fillMaxSize().padding(pad)) {
@@ -75,7 +151,7 @@ fun LibraryScreen(state: AppState) {
                     it,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                 )
             }
             error?.let {
@@ -83,25 +159,21 @@ fun LibraryScreen(state: AppState) {
                     it,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                 )
             }
 
-            // 全部 / 收藏 筛选
-            Row(
-                modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                FilterChip(
-                    selected = !favOnly,
-                    onClick = { state.favoritesOnly.value = false },
-                    label = { Text("全部 ${available.size}") },
+            if (!selecting) {
+                CapsuleSearchField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
                 )
-                FilterChip(
-                    selected = favOnly,
-                    onClick = { state.favoritesOnly.value = true },
-                    label = { Text("收藏 ${available.count { it.is_favorite != 0L }}") },
+                FilterPills(
+                    allCount = available.size,
+                    favCount = available.count { it.is_favorite != 0L },
+                    favOnly = favOnly,
+                    onSelect = { state.favoritesOnly.value = it },
                 )
             }
 
@@ -112,16 +184,22 @@ fun LibraryScreen(state: AppState) {
                             CircularProgressIndicator()
                         } else {
                             Text(
-                                if (favOnly) "还没有收藏的书"
-                                else if (offline) "离线模式下没有可读的书"
-                                else "书库为空",
+                                when {
+                                    queryText.isNotEmpty() -> "没有匹配「$queryText」的书"
+                                    favOnly -> "还没有收藏的书"
+                                    offline -> "离线模式下没有可读的书"
+                                    else -> "书库为空"
+                                },
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Spacer(Modifier.height(6.dp))
                             Text(
-                                if (favOnly) "在阅读页点右上角 ♥ 即可收藏"
-                                else if (offline) "恢复网络后同步，或先在在线状态下缓存章节"
-                                else "先在控制台上传书籍，然后点右上角「同步」",
+                                when {
+                                    queryText.isNotEmpty() -> "换个关键词，或清空搜索"
+                                    favOnly -> "在阅读页点右上角 ♥ 即可收藏"
+                                    offline -> "恢复网络后同步，或先在在线状态下缓存章节"
+                                    else -> "先在控制台上传书籍，然后点右上角「同步」"
+                                },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -129,16 +207,32 @@ fun LibraryScreen(state: AppState) {
                     }
                 }
             } else {
-                // 折叠屏/平板自动多列：最小 340dp 一列，展开态会自然变成两列。
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 340.dp),
+                LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     items(shown, key = { it.id }) { book ->
-                        BookCard(book) { state.openBook(book.id) }
+                        BookRow(
+                            book = book,
+                            selecting = selecting,
+                            checked = selected.contains(book.id),
+                            onClick = {
+                                if (selecting) {
+                                    if (selected.contains(book.id)) selected.remove(book.id)
+                                    else selected.add(book.id)
+                                    if (selected.isEmpty()) selecting = false
+                                } else {
+                                    state.openBook(book.id)
+                                }
+                            },
+                            onLongClick = {
+                                if (!selecting) {
+                                    selecting = true
+                                    selected.add(book.id)
+                                }
+                            },
+                        )
                     }
                 }
             }
@@ -146,55 +240,114 @@ fun LibraryScreen(state: AppState) {
     }
 }
 
+/** 全部 / 收藏：胶囊分段控件。 */
 @Composable
-private fun BookCard(book: Books, onClick: () -> Unit) {
+private fun FilterPills(
+    allCount: Int,
+    favCount: Int,
+    favOnly: Boolean,
+    onSelect: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Pill(text = "全部 $allCount", selected = !favOnly) { onSelect(false) }
+        Pill(text = "收藏 $favCount", selected = favOnly) { onSelect(true) }
+    }
+}
+
+@Composable
+private fun Pill(text: String, selected: Boolean, onClick: () -> Unit) {
+    val bg = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface
+    val fg = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+    Box(
+        modifier = Modifier
+            .clip(Squircle.capsule())
+            .background(bg)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 14.dp, vertical = 6.dp),
+    ) {
+        Text(text, style = MaterialTheme.typography.labelMedium, color = fg)
+    }
+}
+
+/** 单本书行：G3 卡片；长按进入多选，选中时浅蓝底。 */
+@Composable
+private fun BookRow(
+    book: Books,
+    selecting: Boolean,
+    checked: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     val favorite = book.is_favorite != 0L
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(modifier = Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(width = 46.dp, height = 62.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
-                contentAlignment = Alignment.Center,
+    SquircleCard(modifier = Modifier.fillMaxWidth()) {
+        ApplePressable(
+            onClick = onClick,
+            selected = checked,
+            modifier = Modifier.fillMaxWidth(),
+            onLongClick = if (selecting) null else onLongClick,
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = book.title.take(1),
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            }
-            Spacer(Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        book.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    if (favorite) {
-                        Spacer(Modifier.width(6.dp))
-                        Text("♥", color = MaterialTheme.colorScheme.error)
-                    }
+                if (selecting) {
+                    AppleCheckbox(checked = checked)
+                    Spacer(Modifier.width(12.dp))
                 }
-                Spacer(Modifier.height(4.dp))
-                val author = book.author.ifBlank { "未知作者" }
-                Text(
-                    "$author · ${book.chapter_count} 章",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    formatBytes(book.size_bytes) + " · 加密存储",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Box(
+                    modifier = Modifier
+                        .size(width = 42.dp, height = 56.dp)
+                        .clip(Squircle.control())
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = book.title.take(1),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            book.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (favorite) {
+                            Spacer(Modifier.width(6.dp))
+                            Text("♥", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        "${book.author.ifBlank { "未知作者" }} · ${book.chapter_count} 章 · ${formatBytes(book.size_bytes)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (!selecting) {
+                    Text(
+                        "›",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = AppleTokens.TertiaryLabel,
+                    )
+                }
             }
-            Text("›", style = MaterialTheme.typography.headlineSmall, color = MaterialTheme.colorScheme.outline)
         }
     }
 }

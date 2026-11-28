@@ -79,6 +79,8 @@ type Server struct {
 	lanPairs  *lan.Store
 	discovery *lan.Discovery
 	blocklist *blocklist.Store
+	// webGrants 是 WebView 免密登录的一次性票据（60 秒、单次）。
+	webGrants *auth.GrantStore
 	scheduler interface {
 		RunOnce(ctx context.Context) (*backup.CreateResult, error)
 	}
@@ -106,6 +108,7 @@ func New(d Deps) *Server {
 		lanPairs:  d.LANPairs,
 		discovery: d.Discovery,
 		blocklist: d.Blocklist,
+		webGrants: auth.NewGrantStore(nil),
 		scheduler: d.Scheduler,
 		mux:       http.NewServeMux(),
 	}
@@ -141,6 +144,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/sync/manifest", s.requireAuth(s.handleSyncManifest))
 	s.mux.HandleFunc("PUT /api/books/{id}/progress", s.requireAuth(s.handleProgressPut))
 	s.mux.HandleFunc("GET /api/books/{id}/progress", s.requireAuth(s.handleProgressGet))
+	// 第十二阶段：批量进度同步（位置优先合并，替代逐书 PUT 的最终一致方案）。
+	s.mux.HandleFunc("GET /api/sync/progress", s.requireAuth(s.handleSyncProgressGet))
+	s.mux.HandleFunc("POST /api/sync/progress", s.requireAuth(s.handleSyncProgressPost))
+	// WebView 免密登录：device token 申请一次性票据，浏览器侧兑换成 session cookie。
+	s.mux.HandleFunc("POST /api/device/web-grant", s.requireAuth(s.handleWebGrant))
+	s.mux.HandleFunc("POST /api/login/grant", s.handleGrantLogin)
 	s.mux.HandleFunc("POST /api/books/{id}/chapters/prefetch", s.requireAuth(s.handlePrefetch))
 	s.mux.HandleFunc("GET /api/books/{id}/chapters/{index}/audio", s.requireAuth(s.handleAudioManifest))
 	s.mux.HandleFunc("POST /api/books/{id}/chapters/{index}/audio/prepare", s.requireAuth(s.handleAudioPrepare))
@@ -158,6 +167,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /api/app/version", s.requireAuth(s.handleAppVersion))
 	s.mux.HandleFunc("GET /api/app/version/latest-hash", s.requireAuth(s.handleAppLatestHash))
 	s.mux.HandleFunc("GET /api/stats/reading", s.requireAuth(s.handleReadingStats))
+	// Web 阅读器（session）：书架元数据 + 用浏览器公钥包装的 DEK + 章节密文。
+	s.mux.HandleFunc("POST /api/web/library", s.requireSession(s.handleWebLibrary))
+	s.mux.HandleFunc("POST /api/web/chapters", s.requireSession(s.handleWebChapters))
 	// 数据导出：管理员会话 + 密码二次验证（防设备被盗后一键拖库）。
 	s.mux.HandleFunc("POST /api/admin/export", s.requireSession(s.handleExport))
 	s.mux.HandleFunc("POST /api/admin/export/preview", s.requireSession(s.handleExportPreview))
@@ -202,6 +214,8 @@ func (s *Server) routes() {
 
 	// 第四阶段：运营控制台（静态资源 + 聚合指标 + 缓存治理）。
 	s.registerAdmin()
+	// 第十二阶段：用户端 SPA（书架/发现/足迹/阅读器），与管理端共用产物。
+	s.registerUserWeb()
 
 	// 书源令牌管理（需要 api 会话；令牌本身只能用于 /gateway/legado/*）。
 	s.mux.HandleFunc("POST /api/admin/legado/tokens", s.requireSession(s.handleLegadoTokenCreate))

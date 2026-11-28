@@ -63,6 +63,7 @@ kotlin {
             implementation(libs.androidx.work.runtime)
             implementation(libs.tinypinyin)
             implementation(libs.biometric)
+            implementation(libs.androidx.graphics.shapes)
             implementation(libs.sqlcipher.android)
             implementation(libs.coroutines.android)
         }

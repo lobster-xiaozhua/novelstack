@@ -277,6 +277,24 @@ class ReaderRepository(
 
     fun localProgress(bookId: String): Progress? = q.selectProgress(bookId).executeAsOneOrNull()
 
+    /**
+     * 应用远端进度（多端同步拉取）。
+     *
+     * 直接写本地并标记为已同步，避免刚拉回来的位置又被当成「本地修改」上报。
+     * 调用方需自行判断远端是否更靠后。
+     */
+    fun applyRemoteProgress(bookId: String, chapterIndex: Int, charOffset: Int, percent: Double) {
+        val ts = now()
+        q.upsertProgress(
+            book_id = bookId,
+            chapter_index = chapterIndex.toLong(),
+            char_offset = charOffset.toLong(),
+            percent = percent,
+            updated_at = ts,
+            synced_at = ts,
+        )
+    }
+
     fun markProgressSynced(bookId: String) {
         q.markProgressSynced(now(), bookId)
     }

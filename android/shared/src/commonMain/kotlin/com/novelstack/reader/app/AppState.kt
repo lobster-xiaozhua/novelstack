@@ -11,6 +11,7 @@ import com.novelstack.reader.model.ApiException
 import com.novelstack.reader.model.AppVersion
 import com.novelstack.reader.model.DiscoverResponse
 import com.novelstack.reader.model.HistoryItem
+import com.novelstack.reader.model.WebGrantDto
 import com.novelstack.reader.model.LoginRequest
 import com.novelstack.reader.model.ProgressRequest
 import com.novelstack.reader.model.ReadingStats
@@ -28,6 +29,7 @@ import io.ktor.util.decodeBase64Bytes
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -45,6 +47,8 @@ sealed interface Screen {
     data object Stats : Screen
     data object ServerSettings : Screen
     data class Reader(val bookId: String) : Screen
+    /** 内嵌 WebView 打开控制台（已带一次性登录票据）。 */
+    data class WebConsole(val url: String) : Screen
 }
 
 @Serializable
@@ -195,6 +199,8 @@ class AppState(
     val canPrefetch: Boolean get() = network.value == NetworkStatus.Online && !power.value.isLow
 
     private var progressJob: Job? = null
+    /** 前台 5 分钟同步循环（进入后台即取消）。 */
+    private var syncLoopJob: Job? = null
     /** 电量监听注销句柄（进程退出时释放）。 */
     private var powerUnregister: (() -> Unit)? = null
     /** 上次进入后台的单调时钟（毫秒）；0 表示在前台。 */
@@ -429,6 +435,33 @@ class AppState(
         refreshCachedIds()
         refreshEndpointState()
         flushProgress()
+        // 把其它端更靠后的进度拉回来（失败不影响书架同步）。
+        runCatching { pullProgress() }
+    }
+
+    /**
+     * 增量拉取远端进度并落本地。
+     *
+     * 只在远端更靠后时才覆盖本地：否则正在阅读的这一端会被别的端的回翻打断。
+     * 覆盖后标记为已同步，避免回环上报。
+     */
+    private suspend fun pullProgress() {
+        if (!api.hasToken()) return
+        val since = store.kvGet("progress_cursor")?.takeIf { it.isNotBlank() }
+        val resp = api.syncProgress(since)
+        var changed = false
+        for (p in resp.items) {
+            val local = store.localProgress(p.bookId)
+            val ahead = local == null ||
+                p.chapterIndex > local.chapter_index.toInt() ||
+                (p.chapterIndex == local.chapter_index.toInt() && p.charOffset > local.char_offset.toInt())
+            if (ahead) {
+                store.applyRemoteProgress(p.bookId, p.chapterIndex, p.charOffset, p.percent)
+                changed = true
+            }
+        }
+        if (resp.cursor.isNotBlank()) store.kvPut("progress_cursor", resp.cursor)
+        if (changed) books.value = store.listBooks()
     }
 
     private fun BookChange.toRow(): BookRow = BookRow(
@@ -912,6 +945,24 @@ class AppState(
     }
 
     /** 刷新本地缓存书籍集合（同步/预读/删书后调用）。 */
+    /**
+     * 书架多选「移除本地缓存」。
+     *
+     * 只删本地副本（元数据 + 已缓存章节），不动服务端书籍——私人站的书籍由控制台
+     * 管理，客户端不应有删除服务端数据的权限。下次同步会重新拉回元数据，
+     * 但正文需要重新缓存，语义与 iOS 的「移除下载」一致。
+     */
+    fun removeLocalBooks(ids: Collection<String>) {
+        if (ids.isEmpty()) return
+        var n = 0
+        for (id in ids) {
+            runCatching { store.deleteBook(id) }.onSuccess { n++ }
+        }
+        books.value = store.listBooks()
+        refreshCachedIds()
+        notice.value = "已移除 $n 本书的本地缓存"
+    }
+
     fun refreshCachedIds() {
         cachedIds.value = runCatching { store.cachedBookIds() }.getOrDefault(emptySet())
     }
@@ -1114,6 +1165,7 @@ class AppState(
      */
     fun onEnterBackground(nowMs: Long = currentMs()) {
         backgroundSinceMs = nowMs
+        stopForegroundSync()
         if (settings.value.appLockEnabled && appLock.isAvailable() && appLock.isEnrolled()) {
             locked.value = true
             lockOnBackground = true
@@ -1137,6 +1189,32 @@ class AppState(
             return
         }
         locked.value = nowMs - bg >= 30_000L
+        startForegroundSync()
+    }
+
+    /**
+     * 前台增量同步：每 5 分钟拉一次进度与书架变更。
+     *
+     * 第十二阶段明确放弃长连接（WebSocket）：移动网络下心跳既费电又不可靠，
+     * 而私人站的进度冲突概率极低。翻页仍走「条件触发」的即时上报，
+     * 定时拉取只负责把其它端的变化带回来。
+     */
+    fun startForegroundSync() {
+        if (syncLoopJob?.isActive == true) return
+        if (!api.hasToken()) return
+        syncLoopJob = scope.launch {
+            while (isActive) {
+                delay(FOREGROUND_SYNC_INTERVAL_MS)
+                if (!api.hasToken()) return@launch
+                if (network.value != NetworkStatus.Online) continue
+                runCatching { syncInternal() }
+            }
+        }
+    }
+
+    fun stopForegroundSync() {
+        syncLoopJob?.cancel()
+        syncLoopJob = null
     }
 
     /** 发起生物识别；成功则解锁。失败由 UI 展示模糊遮罩与重试提示。 */
@@ -1183,6 +1261,34 @@ class AppState(
 
     /** 划词本地搜索的预填词（SearchScreen 进入时读取并清空）。 */
     val searchPrefill = MutableStateFlow<String?>(null)
+
+    /**
+     * 打开 Web 控制台（WebView 免密）。
+     *
+     * 客户端只有 device token，浏览器 cookie 是 HttpOnly，无法直接注入；
+     * 因此先换一张 60 秒一次性票据，再由 WebView 打开登录页完成兑换。
+     */
+    fun requestWebConsole(onReady: (String) -> Unit) {
+        scope.launch {
+            try {
+                val g = api.webGrant()
+                if (g.url.isBlank()) {
+                    notice.value = "服务端未返回控制台地址"
+                } else {
+                    onReady(g.url)
+                }
+            } catch (e: Throwable) {
+                notice.value = if (e is ApiException && e.forbidden) {
+                    "该服务端未启用 Web 控制台"
+                } else {
+                    "无法打开控制台：${friendly(e)}"
+                }
+            }
+        }
+    }
+
+    /** 前台定时同步是否在跑（设置页展示用）。 */
+    fun foregroundSyncActive(): Boolean = syncLoopJob?.isActive == true
 
     /** 文本操作：本地搜索——填充查询词并跳到搜索页。 */
     fun searchLocalText(text: String) {
@@ -1292,5 +1398,8 @@ class AppState(
          * 用于「检查更新」的版本比较与设置页展示。
          */
         val APP_VERSION: String = appVersionName()
+
+        /** 前台增量同步间隔：5 分钟。 */
+        const val FOREGROUND_SYNC_INTERVAL_MS = 5 * 60 * 1000L
     }
 }

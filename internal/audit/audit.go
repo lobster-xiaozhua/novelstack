@@ -40,7 +40,8 @@ func (l *Logger) Record(ctx context.Context, username, ip, action, bookID, resul
 		username, ip, action, bookID, result, detail)
 	if err != nil {
 		// 审计失败不应泄露内部信息到 HTTP 响应；这里静默（标准库 log 走 stderr）。
-		println("audit write failed")
+		// 带上错误原因：排障时只知道「失败了」等于没有信息。
+		println("audit write failed:", err.Error())
 	}
 }
 

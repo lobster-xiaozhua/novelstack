@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +40,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
 import com.novelstack.reader.app.CoverLoadPolicy
+import com.novelstack.reader.ui.components.ApplePressable
+import com.novelstack.reader.ui.components.SquircleCard
 import com.novelstack.reader.app.NetworkStatus
 import com.novelstack.reader.model.DiscoverBook
 
@@ -137,13 +138,14 @@ private fun DiscoverCard(
     onClick: () -> Unit,
 ) {
     val full = quality == CoverLoadPolicy.Quality.FULL
-    Card(modifier = Modifier.width(140.dp).clickable(onClick = onClick)) {
+    SquircleCard(modifier = Modifier.width(140.dp)) {
+        ApplePressable(onClick = onClick, shape = Squircle.control()) {
         Column(modifier = Modifier.padding(10.dp)) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(96.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(Squircle.control())
                     // 低清占位用更淡的底色：不触发任何并发封面加载。
                     .background(
                         MaterialTheme.colorScheme.primary.copy(alpha = if (full) 0.16f else 0.07f),
@@ -179,6 +181,7 @@ private fun DiscoverCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
         }
     }
 }

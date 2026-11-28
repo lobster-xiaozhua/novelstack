@@ -79,14 +79,14 @@ onMounted(() => load(true))
         </thead>
         <tbody>
           <tr v-for="r in rows" :key="r.id">
-            <td class="num">{{ r.id }}</td>
-            <td class="mono" style="white-space:nowrap">{{ ts(r.ts) }}</td>
-            <td>{{ r.username || '—' }}</td>
-            <td class="mono">{{ r.ip || '—' }}</td>
-            <td>{{ r.action }}</td>
-            <td class="mono">{{ r.book_id ? r.book_id.slice(0, 8) : '—' }}</td>
-            <td><span class="pill" :class="r.result === 'ok' ? 'ok' : (r.result === 'skipped' ? 'muted' : (r.result === 'denied' || r.result === 'ratelimited' ? 'warn' : 'bad'))">{{ r.result }}</span></td>
-            <td class="ellip" style="max-width:340px">{{ r.detail || '' }}</td>
+            <td class="num" data-label="#">{{ r.id }}</td>
+            <td class="mono" data-label="时间" style="white-space:nowrap">{{ ts(r.ts) }}</td>
+            <td data-label="用户">{{ r.username || '—' }}</td>
+            <td class="mono" data-label="IP">{{ r.ip || '—' }}</td>
+            <td data-label="动作">{{ r.action }}</td>
+            <td class="mono" data-label="书籍">{{ r.book_id ? r.book_id.slice(0, 8) : '—' }}</td>
+            <td data-label="结果"><span class="pill" :class="r.result === 'ok' ? 'ok' : (r.result === 'skipped' ? 'muted' : (r.result === 'denied' || r.result === 'ratelimited' ? 'warn' : 'bad'))">{{ r.result }}</span></td>
+            <td class="ellip detail" data-label="摘要">{{ r.detail || '' }}</td>
           </tr>
         </tbody>
       </table>
@@ -97,3 +97,10 @@ onMounted(() => load(true))
     </div>
   </div>
 </template>
+
+<style scoped>
+.detail { max-width: 340px; }
+@media (max-width: 767px) {
+  .detail { max-width: none; }
+}
+</style>

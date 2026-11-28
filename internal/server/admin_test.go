@@ -36,14 +36,14 @@ func TestAdminLoginGateAndEmbeddedAssets(t *testing.T) {
 		t.Fatalf("login page: %d %s", resp.StatusCode, body)
 	}
 
-	// 登录后 /admin 返回内嵌 SPA 入口
+	// 登录后 /admin 返回内嵌 SPA 入口（vite base=/, 资源统一挂 /assets/）
 	authClient := loginOK(t, s)
 	resp, err = authClient.Get(s.ts.URL + "/admin")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body = bodyString(t, resp)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `id="app"`) || !strings.Contains(body, "/admin/assets/") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, `id="app"`) || !strings.Contains(body, "/assets/") {
 		t.Fatalf("admin index: %d %s", resp.StatusCode, body)
 	}
 

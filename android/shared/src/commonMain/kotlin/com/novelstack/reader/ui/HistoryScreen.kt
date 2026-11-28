@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -36,6 +35,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
+import com.novelstack.reader.ui.components.ApplePressable
+import com.novelstack.reader.ui.components.SquircleCard
 import com.novelstack.reader.model.HistoryItem
 import kotlinx.datetime.Clock
 import kotlinx.datetime.Instant
@@ -78,12 +79,13 @@ fun HistoryScreen(state: AppState) {
 
 @Composable
 private fun HistoryCard(item: HistoryItem, onClick: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+    SquircleCard(modifier = Modifier.fillMaxWidth()) {
+        ApplePressable(onClick = onClick, shape = Squircle.card()) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(
                 modifier = Modifier
                     .size(width = 42.dp, height = 56.dp)
-                    .clip(RoundedCornerShape(6.dp))
+                    .clip(Squircle.control())
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)),
                 contentAlignment = Alignment.Center,
             ) {
@@ -130,6 +132,7 @@ private fun HistoryCard(item: HistoryItem, onClick: () -> Unit) {
                     )
                 }
             }
+        }
         }
     }
 }

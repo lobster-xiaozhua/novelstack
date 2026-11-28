@@ -54,10 +54,10 @@ const d = computed(() => data.value)
           <thead><tr><th>书籍</th><th class="num">已回执</th><th class="num">总章节</th><th style="width:40%">覆盖</th></tr></thead>
           <tbody>
             <tr v-for="c in d.search.coverage" :key="c.book_id">
-              <td class="ellip">{{ c.title }}</td>
-              <td class="num">{{ c.indexed_chapters }}</td>
-              <td class="num">{{ c.total_chapters }}</td>
-              <td>
+              <td class="ellip" data-label="书籍">{{ c.title }}</td>
+              <td class="num" data-label="已回执">{{ c.indexed_chapters }}</td>
+              <td class="num" data-label="总章节">{{ c.total_chapters }}</td>
+              <td data-label="覆盖">
                 <div class="barline">
                   <div class="bar"><i :class="c.coverage >= 1 ? 'ok' : ''" :style="{ width: Math.min(100, c.coverage * 100) + '%' }" /></div>
                   <span class="n">{{ pct(c.coverage, 0) }}</span>

@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { getReadingStats, getExportPreview, downloadExport } from '../api'
+import ReadingChart from '../components/ReadingChart.vue'
 
 const loading = ref(false)
 const error = ref('')
@@ -186,14 +187,8 @@ async function runExport() {
     <section class="card" style="margin-top: 14px">
       <h2>最近 30 天 <span class="hint">柱高按当天时长相对最大值</span></h2>
       <div v-if="!barDays.length" class="loading">暂无数据</div>
-      <div v-else class="bars">
-        <div v-for="d in barDays" :key="d.day" class="bar-col" :title="`${d.day} · ${human(d.seconds)}`">
-          <div class="bar-track">
-            <div class="bar" :class="{ zero: !d.seconds }" :style="{ height: barHeight(d) }" />
-          </div>
-          <div class="bar-label">{{ shortDay(d.day) }}</div>
-        </div>
-      </div>
+      <!-- ECharts 按需引入：组件内部动态 import，独立 chunk，不进首屏 -->
+      <ReadingChart v-else :days="barDays" :height="260" />
     </section>
 
     <section class="card" style="margin-top: 14px">

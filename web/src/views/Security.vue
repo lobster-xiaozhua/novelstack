@@ -58,9 +58,9 @@ const rotationState = computed(() => {
             <thead><tr><th>版本</th><th class="num">书籍数</th><th style="width:45%">占比</th></tr></thead>
             <tbody>
               <tr v-for="v in d.kek.distribution" :key="v.version">
-                <td><span class="tag">v{{ v.version }}</span></td>
-                <td class="num">{{ v.books }}</td>
-                <td>
+                <td data-label="版本"><span class="tag">v{{ v.version }}</span></td>
+                <td class="num" data-label="书籍数">{{ v.books }}</td>
+                <td data-label="占比">
                   <div class="barline">
                     <div class="bar"><i :class="v.version === d.kek.current_version ? 'ok' : ''" :style="{ width: (d.books.total ? v.books / d.books.total * 100 : 0) + '%' }" /></div>
                     <span class="n">{{ pct(d.books.total ? v.books / d.books.total : 0, 1) }}</span>

@@ -102,10 +102,10 @@ async function doPrune() {
           <thead><tr><th>书籍</th><th class="num">片段</th><th class="num">占用</th><th style="width:120px"></th></tr></thead>
           <tbody>
             <tr v-for="b in d.cache.by_book" :key="b.book_id">
-              <td class="ellip">{{ b.title || b.book_id }}</td>
-              <td class="num">{{ b.segments }}</td>
-              <td class="num">{{ bytes(b.bytes) }}</td>
-              <td style="text-align:right">
+              <td class="ellip" data-label="书籍">{{ b.title || b.book_id }}</td>
+              <td class="num" data-label="片段">{{ b.segments }}</td>
+              <td class="num" data-label="占用">{{ bytes(b.bytes) }}</td>
+              <td style="text-align:right" data-label="操作">
                 <button class="btn ghost" @click="openClear('book', b.book_id, b.title || b.book_id)">清理</button>
               </td>
             </tr>

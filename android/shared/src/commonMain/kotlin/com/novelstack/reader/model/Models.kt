@@ -111,6 +111,14 @@ data class ProgressDto(
     @SerialName("updated_at") val updatedAt: String = "",
 )
 
+/** GET /api/sync/progress 的响应：增量进度 + 下一次的游标。 */
+@Serializable
+data class SyncProgressResponse(
+    val cursor: String = "",
+    val count: Int = 0,
+    val items: List<ProgressDto> = emptyList(),
+)
+
 @Serializable
 data class ProgressRequest(
     @SerialName("chapter_index") val chapterIndex: Int,
@@ -295,4 +303,12 @@ data class LanPairRequest(
     @SerialName("pairing_code") val pairingCode: String,
     @SerialName("device_name") val deviceName: String = "",
     @SerialName("public_key") val publicKey: String = "",
+)
+
+/** POST /api/device/web-grant 的响应：一次性 WebView 登录票据。 */
+@Serializable
+data class WebGrantDto(
+    val grant: String = "",
+    val url: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
 )

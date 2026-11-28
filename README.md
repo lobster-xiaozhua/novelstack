@@ -1,4 +1,4 @@
-# novelstack —— 私人小说阅读站（第一 ~ 六阶段）
+# novelstack —— 私人小说阅读站（第一 ~ 十二阶段）
 
 单用户、默认对外屏蔽的私人站点。
 
@@ -10,6 +10,8 @@
 | 四 | **加密备份包 + 一键恢复演练** · **KEK 轮换** · **只读运营控制台 `/admin`**（go:embed 内嵌 Vue）· **批量导入 + 缓存生命周期** |
 | 五 | **移动端 App（KMP + Compose）**：设备令牌/配对码 · 增量同步 · 加密章节预取 · SQLCipher + FTS5 离线库 · 设备内解密朗读 · 一键清除 |
 | 六 | **最小运维加固**：每日自动备份 + 保留策略 · 健康横幅 + 可选 webhook · KEK 离线备份提醒 · Android release 签名模板 |
+| 七~十 | **Android 生产化**：后台播放/通知栏/定时续听 · 发现—阅读—足迹—收藏闭环 · 国产 ROM 保活与全链路遥测 · 动态根地址与局域网配对 · 软删除闭环 + 服务端授时 |
+| 十一+十二 | **全端苹果风（G3 连续曲率）+ 前后台分离 + Web 阅读器 + 多端同步**：用户端 `/` 与运营端 `/admin` 分家 · 去 WebSocket 改前台轮询 + 位置优先合并 · Web Crypto 解密 + SW/IndexedDB 离线读 · 移动端表格降级为卡片 |
 
 第四阶段的第一原则：**能恢复才算备份，能轮换才算密钥管理**。因此本阶段的
 验收不是「命令跑通」，而是「错误口令/篡改包必须失败且不留半成品」「旧包在轮换后仍可解密」
@@ -2292,3 +2294,288 @@ web/src/vendor/qr*.js                # 零依赖 QR 生成
 4. **6 位码仍有理论暴力空间**：IP 绑定 + 每 IP 每分钟 8 次 + 5 分钟有效，把同网段爆破成本抬高，但私有部署仍建议优先用长配对码。
 5. **ZXing 扫码需相机权限**：用户拒绝后只能手动输入 6 位码或剪贴板导入。
 6. **探测 TTL 内地址不刷新**：10 秒内内网恢复/断开不会立刻反映到下一次请求，需等 TTL 过期或手动改地址。
+
+## 22. 第十一 + 十二阶段（合并）：苹果风重构、前后台分离、Web 阅读器与多端同步
+
+这一阶段做的是「同一个站点，两种身份，三种屏幕」。运营控制台留在 `/admin`，普通阅读拆到 `/`；
+视觉上全端统一到苹果的连续曲率（G3）与纯色层级；数据面把 WebSocket 换成前台轮询 + 位置优先合并，
+让两台设备同时读同一本书时，谁都不会把对方往回拽。
+
+### 22.1 能力清单
+
+| 编号 | 能力 | 落点 |
+|---|---|---|
+| A1 | G3 连续曲率（禁直角/禁 G2 圆角） | Android `RoundedPolygon.toPath()`；Web 九宫格 `mask-box-image` |
+| A2 | 纯色层级：`#F2F2F7` 页面 / `#FFFFFF` 卡片 / `0.5px` 内描边 | `AppleTokens`、`styles.css :root` |
+| A3 | 胶囊搜索框 + 分组内嵌列表 + 长按多选 | `CapsuleSearchField`、`GroupedList`、`LibraryScreen` |
+| A4 | 弹簧动效（`dampingRatio=0.75`）、hover 上浮、按压缩放、禁方角水波纹 | `AppleUI.kt`、`.card.hoverable` |
+| B1 | 断点 1440 / 1279 / 1023 / 767，手机 1 列 | `styles.css` 媒体查询 |
+| B2 | 移动端表格降级为卡片列表（`td::before{content:attr(data-label)}`） | 9 个表格页统一加 `data-label` |
+| B3 | `viewport-fit=cover` + 一次性 grant 免密进 WebView | `index.html`、`/api/device/web-grant` |
+| C1 | 用户端与运营端彻底分离 | `/`(书架) `/discover` `/history` `/settings` `/read/:id`；`/admin/*` |
+| C2 | 去掉 WebSocket，前台 5 分钟轮询 + 切前后台立即同步 | `UserShell.vue`、`AppState.startForegroundSync()` |
+| C3 | 位置优先合并（章 → 字符偏移取最远） | `mobile.Position.Ahead()`、`MergeProgress` |
+| D1 | Web Crypto AES-GCM + 每标签页 RSA 密钥对 + Worker 解密 | `crypto/keys.js`、`crypto/decrypt.worker.js` |
+| D2 | Service Worker + IndexedDB 缓存密文，离线可读 | `public/sw.js`、`offline/idb.js` |
+| D3 | 苹果排版 + 原生 `speechSynthesis` 朗读 | `ReaderView.vue` |
+| E1 | 路由懒加载、ECharts 按需、首屏内联骨架 | `router.js`、`ReadingChart.vue`、`index.html` |
+| E2 | Data-label 卡片化后无横向滚动 | 390 / 834 / 1440 三档实测 `scrollWidth == clientWidth` |
+
+### 22.2 G3 曲率：两次踩坑之后的正确做法
+
+「苹果风」和「圆角卡片」的差别只有一件事：圆角的曲率是否连续。`border-radius` 画的是圆弧，
+圆弧与直边的交界处曲率从 1/r 突变到 0，放大后能看出「接缝」；iOS 用的是超椭圆
+`|x|ⁿ + |y|ⁿ = 1`（n ≈ 4.2），交界处曲率为 0，所以过渡是「化开」的。
+
+**Android** 用 `androidx.graphics:graphics-shapes`：
+
+```kotlin
+// androidMain/ui/Squircle.android.kt
+val rounded = RoundedPolygon.rectangle(
+    width = size.width, height = size.height,
+    rounding = CornerRounding(radius = r, smoothing = smoothing.coerceIn(0f, 1f)),
+    centerX = size.width / 2f, centerY = size.height / 2f,
+)
+return Outline.Generic(rounded.toPath().asComposePath())
+```
+
+`smoothing = 0.6f` 是 Material 3 expressive 推荐的连续度；`Outline.Generic` 直接喂给 `Shape`，
+`SquircleCard` / `Surface` / `Card` 都能用，不依赖 Material 的 `RoundedCornerShape`。
+iOS 侧没有等价 API，`Squircle.ios.kt` 退化为 `RoundedCornerShape(radius)`（形状正确、曲率不连续）。
+
+**Web** 走 CSS mask，但**不能用 `mask-size: 100% 100%`**——这是第一版实现，直接把 100×100 的
+超椭圆拉伸到元素尺寸，结果 90px 高的卡片被拉成胶囊、320px 高的卡片变成巨角。圆角半径必须与
+元素尺寸解耦，因此改用九宫格（9-slice）：
+
+```css
+/* 源图 64×64、角半径 16；slice=16 让四个角等比缩放、四条边无限拉伸 */
+--sq9: url("data:image/svg+xml;utf8,<svg width='64' height='64' …>");
+
+.g3, .card::before, .btn, .modal, .brand .mark, .nav a, .bookcard .cover, .tag {
+  --sqr: 12px;                          /* 视觉圆角，各组件自己覆盖 */
+  border-radius: var(--sqr);            /* 兜底：不支持 mask-box-image 的引擎退化成 G2 */
+  -webkit-mask-box-image: var(--sq9) 16 fill / var(--sqr) stretch;
+  mask-border: var(--sq9) 16 fill / var(--sqr) stretch;
+}
+.card::before, .modal, .tbl tr::before { --sqr: 16px; }   /* 大面 */
+.brand .mark, .bookcard .cover, .nav a  { --sqr: 10px; }   /* 小面 */
+.tag                                     { --sqr: 7px; }    /* 微面 */
+```
+
+再补两条踩过的坑，留给后来人：
+
+1. **超椭圆的参数化**是 `u = r·cos^(2/n)θ`、`v = r·sin^(2/n)θ`，写成 `r(1−cos^(2/n)θ)` 得到的是
+   **内凹**角（画出来是一朵风车），因为那等价于「从切点往圆心方向收」。
+2. 九个切片里，角部切片必须按**顺时针**接续：右下 `θ:0→π/2`、左下 `π/2→0`、左上 `0→π/2`、
+   右上 `π/2→0`。方向错了不会报错，只会得到一个自交的路径。
+
+### 22.3 纯色层级，不做毛玻璃
+
+| 角色 | 值 | 说明 |
+|---|---|---|
+| 页面底色 | `#F2F2F7` | `body` / `--bg` |
+| 卡片 | `#FFFFFF` | 只靠 0.5px 内描边 `rgba(60,60,67,.12)` 与页面区分 |
+| 主文本 | `#1C1C1E` | 标题 600 / 正文 400 |
+| 次文本 | `#8E8E93` | 说明、单位、占位 |
+| 强调 | `#007AFF` | 链接、主按钮、选中文字 |
+| 危险 | `#FF3B30` | 删除、解封 |
+| 选中底色 | `#E6F0FF` | 列表选中行 / 导航当前项 |
+
+半透明一律换成纯色：侧栏 `#FAFAFC`、底栏 `#FFFFFF`——半透明叠在页面上，观感就是毛玻璃，
+且滚动时文字会透出来。阴影只保留两种：hover 时的 `drop-shadow(0 4px 12px rgba(0,0,0,.05))`，
+以及按压缩放 `scale(.98)`。
+
+### 22.4 前后台分离与路由
+
+服务端 `internal/server/web.go` 注册用户端路由，与 `/admin` 共用同一份内嵌 SPA：
+
+| 路径 | 归属 | 未登录行为 |
+|---|---|---|
+| `/` `/library` `/discover` `/history` `/settings` `/read/{id}` | 用户端 | 303 → `/login?next=<原路径>` |
+| `/login` | 登录页（用户端默认回跳 `/library`） | 已登录则 303 → `/library` |
+| `/admin` `/admin/*` `/admin/login` | 运营端 | 303 → `/login?next=/admin` |
+| `/assets/*` | 构建产物（公开，不含数据） | — |
+
+登录页是 `loginpage.html` 单文件内嵌模板，`serveLoginPage` 按回跳地址替换 `__NEXT__` 与 `__AREA__`
+（控制台 / 私人阅读站），因此两个入口不会出现「标题写着控制台、其实是书架」的自相矛盾。
+前端 `router.js` 全量路由懒加载，`/admin` 下 10 个子页各自成 chunk。
+
+### 22.5 一次性 grant：WebView 免密登录
+
+Android 设置页「打开 Web 控制台」不能把长期口令塞进 URL（会进历史、进日志、被 WebView 记住），
+所以走一次性票据：
+
+```
+POST /api/device/web-grant   (Bearer 设备令牌)
+  → {"grant":"<256bit base64url>","url":"https://host/login?grant=…","expires_at":…}
+GET  /login?grant=…          （页面自动 POST 下一跳）
+POST /api/login/grant        {"grant":"…"}
+  → Set-Cookie: 会话 Cookie（HttpOnly + SameSite=Strict）302 到 /admin
+```
+
+- 60 秒有效、**只能兑换一次**、最多同时存 64 张，与登录共用同一个 IP 限流器；
+- 页面侧 `safeNext()` 用 `new URL(v, location.origin)` 校验同源，挡掉 `//evil.com` 与反斜杠变体；
+- 票据不落库、不写日志，兑换即删除。
+
+### 22.6 多端同步：位置优先，不做 last-write-wins
+
+同一本书在两台设备上，A 读到第 30 章、B 昨天读到第 12 章今天随手翻回去看一眼——如果按「最后写入
+获胜」，A 会被拽回第 12 章。因此服务端合并规则改为**位置优先**：
+
+```go
+// internal/mobile/syncbatch.go
+type Position struct{ ChapterIndex int; CharOffset int }
+
+// Ahead 先比章，章相同再比章内字符偏移；完全相等返回 false（幂等）
+func (p Position) Ahead(o Position) bool
+
+// 单本路径与批量路径共用同一判定
+if !(Position{p.ChapterIndex, p.CharOffset}).Ahead(Position{cur.ChapterIndex, cur.CharOffset}) {
+    return cur, nil   // 就地返回已有进度，不写库
+}
+```
+
+- `POST /api/sync/progress` 批量上限 200 条，返回 `applied`（真正改写了库的条数）与 `stored`（并入后的最终位置）；
+- `GET /api/sync/progress?since=<cursor>` 增量拉取，`cursor` 单调递增，客户端只需保存最后一次；
+- 不同书的进度互不影响，按各自更新时间排序；
+- 客户端 `AppState.pullProgress()` 在**前台**每 5 分钟跑一次，`ON_START`/`ON_STOP` 立即触发一次并在后台停止计时器——
+  没有 WebSocket，也就没有重连风暴与心跳耗电。
+
+### 22.7 Web 阅读器：密钥不过网、不落盘
+
+| 环节 | 做法 |
+|---|---|
+| 密钥交换 | 每个标签页生成一对 RSA-OAEP-256 密钥，公钥（SPKI PEM）登记给服务端换 DEK |
+| 私钥 | 只存 `sessionStorage` 的 JWK；**关闭标签页即清除** |
+| DEK | 只在内存变量里；不写 localStorage / IndexedDB / Cookie |
+| 解密 | `crypto/decrypt.worker.js` Web Crypto AES-GCM，NSCH 包格式与移动端一致（AAD 绑定 bookID + 头 16 字节） |
+| 缓存 | IndexedDB 只存**密文**，离线时先取密文再解密 |
+| 外壳 | Service Worker 只缓存 app shell；`/api/` 永远走网络；navigate 请求网络优先、失败回退缓存 |
+
+结果：关掉标签页，DEK 随内存消失；重开需要重新登录换 DEK，已缓存的密文在没有 DEK 的情况下等同噪音。
+这是刻意的取舍——离线可读，但离线不等于「密钥永久驻留浏览器」。
+
+### 22.8 响应式与表格降级
+
+断点：`≥1440` 4 列 / `1280–1439` 3 列 / `1024–1279` 3 列 / `768–1023` 2 列（侧栏转顶部横条）/
+`<768` 1 列。手机端每张卡片 16px 外边距，首屏 `padding: 16px`。
+
+表格降级不用两份模板，纯 CSS：
+
+```css
+@media (max-width: 767px) {
+  .tbl, .tbl tbody { display: block; }
+  .tbl thead { display: none; }
+  .tbl tr { display: block; margin-bottom: 10px; position: relative; }  /* 每行一张卡 */
+  .tbl tr::before { /* 同一套 --sq9 蒙版画卡片底 */ }
+  .tbl td { display: flex; justify-content: space-between; text-align: right; }
+  .tbl td::before { content: attr(data-label); color: var(--secondary); }  /* 字段名 */
+  .card:has(> .tbl) { padding: 0; }            /* 避免「卡片套卡片」 */
+  .card:has(> .tbl)::before { content: none; }
+}
+```
+
+配套改动：`Audit` / `Devices` / `Cache` / `Search` / `Security` / `TTS` / `Telemetry` /
+`Overview` / `Blocklist` 九个页面的每个 `<td>` 都补了 `data-label`（黑名单页原本是 `div` 拼的行，
+本阶段改成真正的 `<table>`，桌面端才有对齐的列）。
+
+### 22.9 性能
+
+- **路由级懒加载**：`/admin/audit` 等 10 个子页 + 用户端 5 个视图各自成 chunk，首屏只加载 `vue` + `index`。
+- **ECharts 按需**：`echarts/core` + `BarChart` + `GridComponent`/`TooltipComponent` + `CanvasRenderer`，
+  且只在 `/admin/stats` 动态 `import()`。构建产物里 echarts 被拆成 `charts` / `components` / `Axis` /
+  `graphic` / `renderers` 五个按需 chunk（合计 ~880 KB），**首屏一个都不加载**。
+- **首屏骨架**：`index.html` 内联三段灰条 + 三张卡片占位（~600 B），Vue 挂载后由真实内容替换，
+  避免白屏；骨架不引外部 CSS，因此不受构建产物体积影响。
+- **Compose**：`LazyColumn` 全部带 `key`，列表过滤走 `derivedStateOf`，避免每次重组重算。
+
+### 22.10 文件树（本阶段新增 / 修改）
+
+```
+web/src/
+├── styles.css                 ★ 重写：G3 九宫格蒙版、色彩令牌、断点、表格降级、阅读器、骨架
+├── router.js                  ★ 用户端/运营端分流 + 全量懒加载
+├── main.js                    ★ 注册 Service Worker
+├── App.vue                    ★ 只剩 <router-view/>
+├── userApi.js  user/store.js  ★ 用户端 API 与状态（5 分钟轮询、visibilitychange）
+├── crypto/keys.js             ★ 每标签页 RSA 密钥对，私钥仅 sessionStorage
+├── crypto/nsch.js             ★ NSCH 包解析（与移动端同格式）
+├── crypto/decrypt.worker.js   ★ Web Crypto AES-GCM 解密（离开主线程）
+├── offline/idb.js             ★ 密文缓存（IndexedDB）
+├── components/ReadingChart.vue ★ ECharts 按需 + ResizeObserver
+└── views/
+    ├── AdminShell.vue         ★ 导航改 /admin/*，退出走 location.replace
+    └── user/                  ★ UserShell / ShelfView / DiscoverView / HistoryView /
+                                 UserSettingsView / ReaderView
+web/public/sw.js               ★ app shell 缓存策略
+web/index.html                 ★ viewport-fit、theme-color、内联骨架
+web/vite.config.js             ★ base '/'、manualChunks、/api 代理
+
+internal/
+├── server/web.go              ★ 用户端路由 + 登录页渲染 + 公共静态资源
+├── server/loginpage.html      ★ 统一登录页（G3 蒙版、同源校验、grant 自动兑换）
+├── server/sync.go             ★ 批量同步 / grant / Web 书库 / Web 章节
+├── auth/grant.go              ★ 一次性票据（60s、单次、上限 64）
+├── mobile/syncbatch.go        ★ Position.Ahead / MergeProgress / ListProgress
+├── mobile/manifest.go         ★ PutProgress 改位置优先
+├── audit/audit.go             ★ 写失败日志带上原因
+└── server/stage12_test.go     ★ 合并语义、未知书拒绝、grant 单次、Web 解密全链路
+
+android/shared/src/
+├── commonMain/.../ui/Squircle.kt          ★ expect 超椭圆 Shape
+├── androidMain/.../ui/Squircle.android.kt ★ RoundedPolygon → Outline.Generic
+├── iosMain/.../ui/Squircle.ios.kt         ★ RoundedCornerShape 兜底
+├── commonMain/.../ui/Theme.kt             ★ 重写：AppleTokens / AppleTypography
+├── commonMain/.../ui/components/AppleUI.kt ★ 弹簧、卡片、可按压、分组列表、胶囊搜索、复选框、
+│                                            多选头、底部操作栏
+├── commonMain/.../ui/LibraryScreen.kt      ★ 分组列表 + 长按多选 + 批量移除
+├── commonMain/.../ui/SettingsScreen.kt     ★ 9 个分组 + Web 控制台入口
+├── commonMain/.../ui/WebConsoleScreen.kt   ★ expect PlatformWebView
+├── androidMain/.../ui/WebConsoleScreen.android.kt ★ WebView 加固（禁文件、禁混合内容）
+└── commonMain/.../app/AppState.kt          ★ 前台轮询、removeLocalBooks、Screen.WebConsole
+```
+
+### 22.11 验收
+
+自动化：
+
+| 项 | 结果 |
+|---|---|
+| `go test ./...` | 23 个包 **全部 ok**（新增 `stage12_test.go` 4 例：位置合并、未知书拒绝、grant 只能用一次、Web 书库→解 DEK→解章节） |
+| `:shared:testDebugUnitTest` | **99 个用例 0 失败** |
+| `:androidApp:assembleDebug` | 成功（APK 正常产出） |
+| `pnpm build` | 成功；33 个 chunk，首屏无 echarts |
+
+浏览器实测（Chromium，`document.documentElement.scrollWidth == clientWidth`）：
+
+| 宽度 | 布局 | 横向溢出 |
+|---|---|---|
+| 390 × 844 | 1 列；表格降级为卡片；底栏固定 | `0` |
+| 834 × 1000 | 2 列；侧栏转顶部横条 | `0` |
+| 1440 × 900 | 侧栏 + 4 列 | `0` |
+
+人工验收清单：
+
+1. 所有卡片/按钮/输入框/弹窗的角都是连续曲率，放大到 4× 看不到「圆弧接直边」的接缝；
+2. hover 上浮 2px、按下缩到 0.98，无方角水波纹；
+3. 手机端 Admin 每个表格页都是一列卡片、字段名在左、值在右，没有横向滚动条；
+4. 两台设备读同一本书，A 读到第 30 章、B 翻回第 12 章，5 分钟内 A 仍是第 30 章；
+5. 关掉 Web 标签页再打开，离线缓存的书仍需要重新登录才能读（说明 DEK 已随内存释放）；
+6. 断网后刷新阅读页，Service Worker 仍能从缓存起壳、从 IndexedDB 取密文并解密。
+
+### 22.12 已知限制
+
+1. **`mask-border` 只有 `-webkit-` 前缀可用**：Firefox 尚未实现，退化路径是 `border-radius`
+   （形状对、曲率不连续）。要全引擎一致，只能等 `corner-shape: squircle` 铺开。
+2. **首屏骨架仍是普通圆角**：骨架内联在 `index.html` 里，若要把 900 B 的 `--sq9` 也塞进关键路径，
+   收益（~200 ms 的视觉一致）不抵成本，因此保留 `border-radius: 16px`。
+3. **Web 端「离线」是有条件的**：DEK 在内存里，关标签页即失效；离线只能读到「本次会话内已解密过的章节」，
+   重新打开需要联网换 DEK 后才能解已缓存的密文。
+4. **轮询有延迟**：前台 5 分钟一次，切前后台立即触发。两台设备同时阅读时，最坏 5 分钟才看到对方的最新位置；
+   要更实时就得回到 WebSocket / SSE，与本阶段「去掉长连接」的目标冲突。
+5. **只能前进，不能回退**：位置优先合并意味着「主动跳回前面的章节」不会同步出去。这是刻意的取舍
+   （否则任何一次误触都会污染其它设备），需要回退时请在目标设备上手动跳章后再等一次同步。
+6. **grant 单次**：同一个免密链接在两个标签页同时打开，只有一个能登录，另一个显示「票据已失效」。
+7. **IndexedDB 受浏览器配额限制**：长书全量缓存可能触发配额（通常为磁盘可用空间的百分比），
+   超出后写入失败会静默跳过，只影响离线范围。
+8. **移动端 Admin 顶部导航横向滚动**：条目多时需要左右滑动，未做折叠菜单。

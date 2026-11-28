@@ -136,9 +136,9 @@ const topCoverage = computed(() => (d.value?.search?.coverage || []).slice(0, 6)
             <thead><tr><th>书籍</th><th class="num">章节</th><th style="width:38%">覆盖</th></tr></thead>
             <tbody>
               <tr v-for="c in topCoverage" :key="c.book_id">
-                <td class="ellip">{{ c.title }}</td>
-                <td class="num">{{ c.indexed_chapters }}/{{ c.total_chapters }}</td>
-                <td><div class="barline"><div class="bar"><i :style="{ width: (c.coverage * 100) + '%' }" /></div><span class="n">{{ pct(c.coverage, 0) }}</span></div></td>
+                <td class="ellip" data-label="书籍">{{ c.title }}</td>
+                <td class="num" data-label="章节">{{ c.indexed_chapters }}/{{ c.total_chapters }}</td>
+                <td data-label="覆盖"><div class="barline"><div class="bar"><i :style="{ width: (c.coverage * 100) + '%' }" /></div><span class="n">{{ pct(c.coverage, 0) }}</span></div></td>
               </tr>
             </tbody>
           </table>
@@ -151,9 +151,9 @@ const topCoverage = computed(() => (d.value?.search?.coverage || []).slice(0, 6)
             <thead><tr><th>时间</th><th>动作</th><th>结果</th></tr></thead>
             <tbody>
               <tr v-for="a in d.audit.recent.slice(0, 8)" :key="a.id">
-                <td class="mono">{{ ts(a.ts) }}</td>
-                <td>{{ a.action }}</td>
-                <td><span class="pill" :class="a.result === 'ok' ? 'ok' : (a.result === 'denied' || a.result === 'ratelimited' ? 'warn' : 'bad')">{{ a.result }}</span></td>
+                <td class="mono" data-label="时间">{{ ts(a.ts) }}</td>
+                <td data-label="动作">{{ a.action }}</td>
+                <td data-label="结果"><span class="pill" :class="a.result === 'ok' ? 'ok' : (a.result === 'denied' || a.result === 'ratelimited' ? 'warn' : 'bad')">{{ a.result }}</span></td>
               </tr>
             </tbody>
           </table>

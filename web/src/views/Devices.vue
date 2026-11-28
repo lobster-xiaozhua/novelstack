@@ -193,20 +193,20 @@ onUnmounted(() => clearInterval(timer))
         </thead>
         <tbody>
           <tr v-for="d in devices" :key="d.id">
-            <td>
+            <td data-label="设备">
               <b>{{ d.name }}</b>
               <div class="mono dim">{{ d.token_prefix }}…</div>
             </td>
-            <td class="mono">{{ d.id }}</td>
-            <td>
+            <td class="mono" data-label="ID">{{ d.id }}</td>
+            <td data-label="公钥">
               <span :class="['pill', d.has_public_key ? 'ok' : 'warn']">
                 {{ d.has_public_key ? '已登记' : '无（仅元数据）' }}
               </span>
             </td>
-            <td class="dim">{{ ts(d.created_at) }}</td>
-            <td class="dim">{{ d.last_used_at ? ago(d.last_used_at) : '从未' }}</td>
-            <td><span :class="['pill', statusOf(d).cls]">{{ statusOf(d).label }}</span></td>
-            <td class="right">
+            <td class="dim" data-label="创建">{{ ts(d.created_at) }}</td>
+            <td class="dim" data-label="最近使用">{{ d.last_used_at ? ago(d.last_used_at) : '从未' }}</td>
+            <td data-label="状态"><span :class="['pill', statusOf(d).cls]">{{ statusOf(d).label }}</span></td>
+            <td class="right" data-label="操作">
               <button
                 v-if="!d.revoked_at"
                 class="btn ghost danger"
