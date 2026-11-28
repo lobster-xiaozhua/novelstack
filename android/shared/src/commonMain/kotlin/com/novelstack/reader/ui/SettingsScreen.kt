@@ -42,6 +42,8 @@ import com.novelstack.reader.app.Screen
 import com.novelstack.reader.ui.components.ApplePressable
 import com.novelstack.reader.ui.components.DestructiveTextButton
 import com.novelstack.reader.ui.components.GroupedList
+import com.novelstack.reader.ui.components.IosActionSheet
+import com.novelstack.reader.ui.components.SheetAction
 import com.novelstack.reader.ui.components.SectionHeader
 import kotlinx.datetime.Clock
 
@@ -124,6 +126,12 @@ fun SettingsScreen(state: AppState) {
                     title = "服务器设置",
                     subtitle = "地址切换、剪贴板导入、局域网发现与 6 位码配对",
                     onClick = { state.screen.value = Screen.ServerSettings },
+                )
+                RowDivider()
+                RowAction(
+                    title = "使用指南",
+                    subtitle = "导入 TXT、多音色听书、局域网连接、多端进度合并",
+                    onClick = { state.screen.value = Screen.Guide },
                 )
             }
 
@@ -350,20 +358,18 @@ fun SettingsScreen(state: AppState) {
         }
     }
 
-    if (confirmWipe) {
-        AlertDialog(
-            onDismissRequest = { confirmWipe = false },
-            title = { Text("确认清除本地数据？") },
-            text = { Text("此操作不可撤销，将删除本机全部已缓存章节与设备凭证。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmWipe = false
-                    state.logoutAndWipe()
-                }) { Text("清除", color = MaterialTheme.colorScheme.error) }
+    // 危险操作统一走底部确认菜单：不在页面上放「大红按钮」，点进来还要再确认一次。
+    IosActionSheet(
+        visible = confirmWipe,
+        title = "退出并清除本地数据？",
+        message = "将删除本机缓存的章节、SQLCipher 数据库、Keystore 设备密钥与 device token。服务端数据不受影响，但需要重新配对。",
+        actions = listOf(
+            SheetAction("清除并退出", danger = true) {
+                state.logoutAndWipe()
             },
-            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("取消") } },
-        )
-    }
+        ),
+        onDismiss = { confirmWipe = false },
+    )
 
     if (showUpdate) {
         AlertDialog(

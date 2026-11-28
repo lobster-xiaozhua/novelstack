@@ -110,6 +110,11 @@ class ReaderApplication : Application() {
             appLock = appLock,
             screenGuard = screenGuard,
             textActions = textActions,
+            // 引导状态放 DataStore：不进加密库，退出登录也不该被清掉。
+            prefs = com.novelstack.reader.data.AppPreferences(
+                scope = koin.get<CoroutineScope>(),
+                filePath = java.io.File(filesDir, "novelstack.preferences_pb").absolutePath,
+            ),
         )
 
         networkMonitor = NetworkMonitor(this) { status -> state.onNetworkChanged(status) }

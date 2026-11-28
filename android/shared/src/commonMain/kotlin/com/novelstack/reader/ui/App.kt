@@ -33,6 +33,7 @@ fun NovelApp(state: AppState) {
     val settings by state.settings.collectAsState()
     val systemDark = isSystemInDarkTheme()
     val locked by state.locked.collectAsState()
+    val onboarded by state.onboarded.collectAsState()
 
     // 终端防御：阅读/设置页防截屏（FLAG_SECURE）随页面切换。
     androidx.compose.runtime.LaunchedEffect(screen) {
@@ -50,9 +51,14 @@ fun NovelApp(state: AppState) {
                 Screen.Login -> LoginScreen(state)
                 Screen.Search -> SearchScreen(state)
                 Screen.ServerSettings -> ServerSettingsScreen(state)
+                Screen.Guide -> GuideScreen(state) { state.screen.value = Screen.Settings }
                 is Screen.Reader -> ReaderScreen(state, s.bookId)
                 is Screen.WebConsole -> WebConsoleScreen(s.url) { state.screen.value = Screen.Settings }
                 else -> MainTabs(state, s)
+            }
+            // 首次启动：盖一层欢迎页（登录页不盖——还没配对时看引导没有意义）。
+            if (!onboarded && screen !is Screen.Login) {
+                OnboardingScreen(onDone = { state.completeOnboarding() })
             }
             // 应用锁：验证未通过时全屏模糊遮罩，内容不可见也不可操作。
             if (locked) {

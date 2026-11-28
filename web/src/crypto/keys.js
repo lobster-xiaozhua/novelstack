@@ -10,6 +10,7 @@
 // 无法用密码派生同一把 KEK；用设备密钥包装 DEK 是唯一不引入明文密钥传输的做法。
 
 const PRIV_KEY = 'novelstack.web.kp'
+const ALG = { name: 'RSA-OAEP', hash: 'SHA-256' }
 const B64 = /^[A-Za-z0-9+/=]+$/
 
 function b64ToBytes(b64) {
@@ -34,21 +35,28 @@ function derToPem(der) {
   return `-----BEGIN PUBLIC KEY-----\n${lines.join('\n')}\n-----END PUBLIC KEY-----\n`
 }
 
-/** 取得（必要时生成）本标签页的设备密钥对。 */
+/**
+ * 取得（必要时生成）本标签页的设备密钥对。
+ *
+ * 刷新页面后从 sessionStorage 恢复：私钥以 non-extractable 导入（内存里导不出去），
+ * 公钥单独存一份 JWK 再以可导出方式导入——否则 `exportKey('spki')` 会抛
+ * 「key is not extractable」，整个 boot 直接失败（曾经的线上级 bug）。
+ * 公钥本来就是发给服务端的东西，落 sessionStorage 没有保密问题。
+ */
 export async function ensureDeviceKeys() {
   const cached = sessionStorage.getItem(PRIV_KEY)
   if (cached) {
     try {
-      const jwk = JSON.parse(cached)
-      const privateKey = await crypto.subtle.importKey(
-        'jwk', jwk,
-        { name: 'RSA-OAEP', hash: 'SHA-256' },
-        false, ['decrypt'],
-      )
-      return { privateKey }
+      const saved = JSON.parse(cached)
+      if (saved && saved.priv && saved.pub) {
+        const privateKey = await crypto.subtle.importKey('jwk', saved.priv, ALG, false, ['decrypt'])
+        const publicKey = await crypto.subtle.importKey('jwk', saved.pub, ALG, true, ['encrypt'])
+        return { privateKey, publicKey }
+      }
     } catch (_) {
-      sessionStorage.removeItem(PRIV_KEY)
+      // 旧格式（只存了私钥）或内容损坏：直接重建，服务端会按新公钥重新包装 DEK。
     }
+    sessionStorage.removeItem(PRIV_KEY)
   }
   const pair = await crypto.subtle.generateKey(
     {
@@ -60,28 +68,17 @@ export async function ensureDeviceKeys() {
     true,
     ['encrypt', 'decrypt'],
   )
-  const jwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
-  sessionStorage.setItem(PRIV_KEY, JSON.stringify(jwk))
+  const priv = await crypto.subtle.exportKey('jwk', pair.privateKey)
+  const pub = await crypto.subtle.exportKey('jwk', pair.publicKey)
+  sessionStorage.setItem(PRIV_KEY, JSON.stringify({ priv, pub }))
   return { privateKey: pair.privateKey, publicKey: pair.publicKey }
 }
 
 /** 导出 SPKI PEM（服务端用 devices.ParseRSAPublicKey 解析）。 */
 export async function exportPublicKeyPem(keys) {
-  const pub = keys.publicKey || (await publicKeyFromPrivate(keys.privateKey))
-  const spki = await crypto.subtle.exportKey('spki', pub)
+  if (!keys || !keys.publicKey) throw new Error('缺少公钥：请通过 ensureDeviceKeys() 取得密钥对')
+  const spki = await crypto.subtle.exportKey('spki', keys.publicKey)
   return derToPem(spki)
-}
-
-async function publicKeyFromPrivate(privateKey) {
-  const jwk = await crypto.subtle.exportKey('jwk', privateKey)
-  delete jwk.d
-  delete jwk.p
-  delete jwk.q
-  delete jwk.dp
-  delete jwk.dq
-  delete jwk.qi
-  jwk.key_ops = ['encrypt']
-  return crypto.subtle.importKey('jwk', jwk, { name: 'RSA-OAEP', hash: 'SHA-256' }, true, ['encrypt'])
 }
 
 /** 用私钥解包服务端给的 base64 RSA-OAEP 密文，得到 32 字节 DEK。 */

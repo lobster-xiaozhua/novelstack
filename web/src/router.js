@@ -12,6 +12,7 @@ const routes = [
       { path: 'discover', name: 'user-discover', component: () => import('./views/user/DiscoverView.vue') },
       { path: 'history', name: 'user-history', component: () => import('./views/user/HistoryView.vue') },
       { path: 'settings', name: 'user-settings', component: () => import('./views/user/UserSettingsView.vue') },
+      { path: 'settings/guide', name: 'user-guide', component: () => import('./views/user/GuideView.vue') },
     ],
   },
   {

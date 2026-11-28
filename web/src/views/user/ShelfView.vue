@@ -1,14 +1,29 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { state, progressOf } from '../../user/store'
+import EmptyState from '../../components/EmptyState.vue'
 
-const books = computed(() =>
+const router = useRouter()
+const q = ref('')
+
+const all = computed(() =>
   [...state.books].sort((a, b) => {
     const pa = progressOf(a.id)?.updated_at || ''
     const pb = progressOf(b.id)?.updated_at || ''
     return pb.localeCompare(pa) || a.title.localeCompare(b.title, 'zh')
   }),
 )
+
+const books = computed(() => {
+  const key = q.value.trim().toLowerCase()
+  if (!key) return all.value
+  return all.value.filter(
+    (b) =>
+      String(b.title || '').toLowerCase().includes(key) ||
+      String(b.author || '').toLowerCase().includes(key),
+  )
+})
 
 function percentOf(book) {
   const p = progressOf(book.id)
@@ -28,12 +43,39 @@ function caption(book) {
 
 <template>
   <div>
-    <div v-if="!books.length" class="empty">
-      书架还是空的<br />
-      <span style="font-size:12.5px">在控制台上传书籍后同步即可</span>
+    <div class="search" role="search" style="margin-bottom:14px">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+        <circle cx="7" cy="7" r="4.6" />
+        <path d="M10.4 10.4 L14 14" stroke-linecap="round" />
+      </svg>
+      <input v-model="q" type="search" placeholder="搜索书名、作者" aria-label="搜索书架" />
+      <button
+        v-if="q"
+        type="button"
+        style="border:0;background:transparent;color:var(--secondary);cursor:pointer;padding:0"
+        @click="q = ''"
+      >✕</button>
     </div>
 
-    <div v-else class="rows" style="gap:10px;display:flex;flex-direction:column">
+    <EmptyState
+      v-if="!all.length"
+      art="shelf"
+      title="书架空空如也"
+      desc="同步一本书进来，就能接着上次的位置读。"
+      cta="去发现页找书"
+      @action="router.push('/discover')"
+    />
+
+    <EmptyState
+      v-else-if="!books.length"
+      art="doc"
+      :title="`没有匹配「${q.trim()}」的书`"
+      desc="换个关键词试试，或者清空搜索看全部。"
+      cta="清空搜索"
+      @action="q = ''"
+    />
+
+    <div v-else class="rows book-rows">
       <router-link
         v-for="b in books"
         :key="b.id"
@@ -45,7 +87,11 @@ function caption(book) {
         <div class="meta">
           <b>{{ b.title }}</b>
           <span>{{ caption(b) }}</span>
-          <div class="progress" style="margin-top:8px;height:3px;background:rgba(120,120,128,.16);border-radius:2px;overflow:hidden">
+          <div
+            v-if="percentOf(b) > 0"
+            class="progress"
+            style="margin-top:8px;height:3px;background:rgba(120,120,128,.16);border-radius:2px;overflow:hidden"
+          >
             <i :style="{ display:'block', height:'100%', width: (percentOf(b) * 100) + '%', background:'var(--blue)', transition:'width .3s ease' }"></i>
           </div>
         </div>

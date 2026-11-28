@@ -406,3 +406,75 @@ fun DestructiveTextButton(
             .padding(horizontal = 14.dp, vertical = 10.dp),
     )
 }
+
+/** 主按钮：蓝底白字，G3 圆角，按下缩到 0.98（没有水波纹）。 */
+@Composable
+fun ApplePrimaryButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    containerColor: Color = MaterialTheme.colorScheme.primary,
+) {
+    ApplePressable(
+        onClick = onClick,
+        enabled = enabled,
+        shape = remember { Squircle.control() },
+        modifier = modifier,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .background(if (enabled) containerColor else containerColor.copy(alpha = 0.4f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text,
+                style = MaterialTheme.typography.titleMedium,
+                color = Color.White,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+/** 状态标签的语义色：低饱和底 + 高饱和字，参考 iOS 的 ok / denied 徽标。 */
+enum class PillTone { Ok, Warn, Bad, Neutral }
+
+/**
+ * 状态标签：完美胶囊（半径 = 高度一半），
+ * 底色饱和度压到 8%~14%，文字取同色系最深的一档，保证小字号也够对比度。
+ */
+@Composable
+fun ApplePill(
+    text: String,
+    tone: PillTone = PillTone.Neutral,
+    modifier: Modifier = Modifier,
+    leadingDot: Boolean = true,
+) {
+    val (bg, fg) = when (tone) {
+        PillTone.Ok -> Color(0xFFE3F7E8) to Color(0xFF12833C)
+        PillTone.Warn -> Color(0xFFFFF3E0) to Color(0xFFB26A00)
+        PillTone.Bad -> Color(0xFFFDE8E6) to Color(0xFFD12B20)
+        PillTone.Neutral -> Color(0xFFEFEFF4) to Color(0xFF6E6E73)
+    }
+    Row(
+        modifier = modifier
+            .clip(remember { Squircle.capsule() })
+            .background(bg)
+            .padding(horizontal = 9.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (leadingDot) {
+            Box(Modifier.size(5.dp).clip(CircleShape).background(fg))
+            Spacer(Modifier.width(5.dp))
+        }
+        Text(
+            text,
+            style = MaterialTheme.typography.labelSmall,
+            color = fg,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}

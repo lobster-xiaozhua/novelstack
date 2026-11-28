@@ -1,6 +1,10 @@
 <script setup>
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { state, progressOf } from '../../user/store'
+import EmptyState from '../../components/EmptyState.vue'
+
+const router = useRouter()
 
 const favorites = computed(() =>
   state.books.filter((b) => b.is_favorite === true || b.is_favorite === 1),
@@ -49,7 +53,14 @@ function status(book) {
     <div style="font-size:12px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--secondary);margin:0 0 8px 4px">
       最近入库
     </div>
-    <div v-if="!recent.length" class="empty">书库为空</div>
+    <EmptyState
+      v-if="!recent.length"
+      art="doc"
+      title="书库还是空的"
+      desc="在控制台上传第一本书，回到这里刷新一下就能看到。"
+      cta="去控制台导入"
+      @action="router.push('/admin/overview')"
+    />
     <div class="grid cols-2" v-else>
       <router-link
         v-for="b in recent"

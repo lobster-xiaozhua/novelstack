@@ -1,4 +1,4 @@
-# novelstack —— 私人小说阅读站（第一 ~ 十二阶段）
+# novelstack —— 私人小说阅读站（第一 ~ 十三阶段）
 
 单用户、默认对外屏蔽的私人站点。
 
@@ -12,6 +12,7 @@
 | 六 | **最小运维加固**：每日自动备份 + 保留策略 · 健康横幅 + 可选 webhook · KEK 离线备份提醒 · Android release 签名模板 |
 | 七~十 | **Android 生产化**：后台播放/通知栏/定时续听 · 发现—阅读—足迹—收藏闭环 · 国产 ROM 保活与全链路遥测 · 动态根地址与局域网配对 · 软删除闭环 + 服务端授时 |
 | 十一+十二 | **全端苹果风（G3 连续曲率）+ 前后台分离 + Web 阅读器 + 多端同步**：用户端 `/` 与运营端 `/admin` 分家 · 去 WebSocket 改前台轮询 + 位置优先合并 · Web Crypto 解密 + SW/IndexedDB 离线读 · 移动端表格降级为卡片 |
+| 十三 | **新手引导与响应式收口**：首启欢迎页（DataStore / localStorage 持久化）· 蒙层镂空高亮 · 空状态引导 · 设置内嵌「使用指南」· PC 侧栏 + 多列网格 · 危险操作降级为底部确认菜单 |
 
 第四阶段的第一原则：**能恢复才算备份，能轮换才算密钥管理**。因此本阶段的
 验收不是「命令跑通」，而是「错误口令/篡改包必须失败且不留半成品」「旧包在轮换后仍可解密」
@@ -2579,3 +2580,129 @@ android/shared/src/
 7. **IndexedDB 受浏览器配额限制**：长书全量缓存可能触发配额（通常为磁盘可用空间的百分比），
    超出后写入失败会静默跳过，只影响离线范围。
 8. **移动端 Admin 顶部导航横向滚动**：条目多时需要左右滑动，未做折叠菜单。
+
+## 23. 第十三阶段：新手引导与响应式收口
+
+前十二阶段解决的是「能不能用」，这一阶段解决的是「第一次打开会不会用、在电脑上看着像不像话」。
+需求给了五条硬性要求和四个引导模块（G1~G4），除此之外顺手修掉了两个会直接毁掉首访体验的
+缺陷——它们不是新功能，而是被这次的真实浏览器跑测抓出来的。
+
+### 23.1 五条硬性要求
+
+| 要求 | 落地方式 | 验收口径 |
+|---|---|---|
+| 响应式 | `<768px` 单列；`≥1024px` 236px 白色侧栏 + 主区多列（书架两列网格）；复杂表格用 `@media` 降级为卡片 | 390 / 834 / 1440 三档 `scrollWidth - clientWidth == 0` |
+| 危险操作隔离 | 删掉用户端底部「清空本地缓存」大红按钮，改成「我的」里的普通文字行，点击弹 iOS 底部确认菜单 | 设置页 DOM 里不存在 `button.danger` 大按钮；确认菜单需二次点击 |
+| 色彩 | 侧栏 `#FFFFFF`、主区 `#F2F2F7`、卡片 `#FFFFFF`；不做毛玻璃 | 取样像素与令牌一致 |
+| 严格 Squircle | Web 用九宫格 `mask-box-image`（`--sq9`），Android 用 `RoundedPolygon(rounding, smoothing=0.6f)`；卡片/按钮/输入框一律不走 `border-radius` 单独成形 | 4× 放大截角，直角边长度与 12px/16px 档位吻合 |
+| 状态标签 | 低饱和底 + 高饱和字 + `border-radius: 999px` 胶囊 | ok / warn / bad / muted 四档色值成对出现 |
+
+**为什么 pill 反而不用遮罩**：胶囊的两端是半圆，`r = h/2` 本身就是曲率连续的上限；
+套九宫格遮罩会把半圆拉成超椭圆，看起来「不圆」。所以 `.pill/.tag` 明确写了
+`-webkit-mask-box-image: none`，这是全站唯一豁免 G3 的形状。
+
+### 23.2 G1 首启欢迎页
+
+三页横滑（`scroll-snap-type: x mandatory`），每页「细线条插画 + 编号 + 大标题 + 两行说明」：
+
+- 01 数据绝对私密：信封加密，密钥只在设备上解开；
+- 02 沉浸阅读：滑动翻页与听书；
+- 03 多端同步：按「最远位置」合并。
+
+底部固定主按钮，末页文案变「开始使用」；右上角常驻「跳过」。完成后写标记：
+Web `localStorage['novelstack.onboarded.v1'] = '1'`，Android `DataStore` 布尔位。
+桌面端补了 ←/→/Esc 键，并把脚部按钮收进 `max-width: 420px`——否则 1440 宽下按钮会拉成一条横幅。
+
+插画是手写 SVG / Compose `Canvas`，只有 `stroke`，没有 fill 和阴影：抄设计图里的「极简细线条」，
+也避免为三张图引入位图资源与多倍图。
+
+### 23.3 G2 蒙层高亮
+
+一整层 `rgba(0,0,0,.6)`，用 `clip-path: path()` 挖洞。关键在填充规则：
+
+```
+path("M0 0 H{vw} V{vh} H0 Z  <内圈逆时针圆角矩形>")
+```
+
+外框顺时针、内圈逆时针，nonzero 规则下两块相互抵消，洞是真的透明（能直接看到并点到底下的组件），
+而不是「再盖一块黑的」。`polygon()` 做不到这一点，因为它不闭合内圈。
+
+气泡是白色 G3 卡片 + 独立小三角（放在气泡**外面**做兄弟节点，否则 `top/left` 相对气泡计算）；
+下方放不下时自动翻到目标上方，左右按视口 `clamp`。书架三步（搜索 → 书卡 → 发现页），
+发现页一步；点「跳过」或空白处走 Spring 淡出，并记 `novelstack.coach.v1`。
+
+### 23.4 G3 空状态
+
+书架空 → 双层书架线稿 +「书架空空如也」+ 蓝字按钮跳发现页；足迹空 → 表盘线稿 +「还没有阅读记录」
++ 跳书架。`.empty-state` 用 `min-height: 56vh` 落在视觉中心，而不是贴着顶部留一大片空白。
+搜不到结果复用同一个组件换个说法（「没有匹配『xx』的书」+ 清空搜索）。
+
+### 23.5 G4 使用指南
+
+设置 → 使用指南，四条 FAQ：TXT 导入与编码嗅探、音色与语速、局域网/配对码、多端进度合并逻辑。
+折叠面板用 `grid-template-rows: 0fr → 1fr` 做高度动画（不用 `max-height` 猜数值，也没有
+`height: auto` 不可动画的问题），同一时刻只展开一条。桌面端整块限宽 720px，
+否则一行 40 多个汉字，回扫距离太长。
+
+### 23.6 跑测抓到的三个缺陷
+
+1. **刷新即白屏（严重）**：`ensureDeviceKeys()` 恢复会话密钥时以 `extractable=false` 导入私钥，
+   随后 `exportKey('spki', publicKey)` 抛 `key is not extractable`，`boot()` 失败 → 页面只剩一条红字。
+   修复：公钥单独以 JWK 存 sessionStorage、以可导出方式重新导入；私钥仍不可导出。
+   顺手删掉「从私钥反推公钥」的死代码——它只能在可导出私钥时工作，是个陷阱。
+2. **欢迎页背后藏着蒙层**：`boot()` 把 `loading` 置回 false 时 watcher 先跑了一轮，
+   此时还没判断要不要弹欢迎页，于是 `coachOpen` 先变 true。修复：加 `booted` 闸门，
+   并在 `openCoach()` 里再挡一次 `showOnboard`。
+3. **桌面确认菜单贴在屏幕最底**：底部贴边是移动端手势语义，鼠标场景下像「漏了一截」。
+   `@media (min-width:768px)` 改为居中浮层（360px 宽 + scale 入场）。
+
+### 23.7 验收
+
+```bash
+go build ./... && go test ./...        # 全绿
+cd web && pnpm build                   # 产物写入 internal/adminui/dist
+cd android && ./gradlew :shared:testDebugUnitTest :androidApp:assembleDebug   # BUILD SUCCESSFUL
+```
+
+浏览器侧用 Playwright 打真实构建产物（`/api/web/library` 打桩返回三本书），逐屏截图核对：
+
+| 场景 | 结论 |
+|---|---|
+| 390 首访 | 欢迎页三屏 → 书架蒙层 3 步 → 书架，`localStorage` 两个键均写入 |
+| 390 刷新 | 密钥从 sessionStorage 恢复，书架正常，无错误条（缺陷 1 的回归点） |
+| 390 设置 | 「清空本地缓存」为普通行，点击弹底部菜单，取消可用 |
+| 390 指南 | 四条 FAQ 正常展开/收起 |
+| 390/834/1440 | `scrollWidth - clientWidth` 均为 `0` |
+| 1440 书架 | 236px 白侧栏 + 两列书卡网格；欢迎页按钮收窄到 420px |
+
+Android 侧仍只能编译 + 单测验证，动效（Pager 回弹、Blur 镂空的 Spring 淡出）需真机确认。
+
+### 23.8 文件
+
+**Web**
+
+- `src/user/guide.js`（新）：引导状态读写
+- `src/components/Onboarding.vue`、`CoachMarks.vue`、`ActionSheet.vue`、`EmptyState.vue`（新）
+- `src/views/user/GuideView.vue`（新）、`UserSettingsView.vue`（重写）、`ShelfView.vue`（重写）、
+  `UserShell.vue`（重写引导编排）、`HistoryView.vue` / `DiscoverView.vue`（换空态）
+- `src/crypto/keys.js`：公钥 JWK 随私钥一起存，修「刷新即白屏」
+- `src/styles.css`：G3 基元扩到 `.sheet-*`，新增欢迎页 / 蒙层 / 空态 / FAQ / 侧栏 / 网格段落
+
+**Android**
+
+- `shared/.../data/AppPreferences.kt`（新）：DataStore 读写 `onboarded`
+- `ui/OnboardingScreen.kt`、`ui/GuideScreen.kt`、`ui/components/CoachMarks.kt`、
+  `ui/components/EmptyState.kt`、`ui/components/IosActionSheet.kt`（新）
+- `ui/components/AppleUI.kt`：`ApplePrimaryButton` + `ApplePill`（四档色调）
+- `app/AppState.kt`、`ReaderApplication.kt`、`ui/App.kt`、`SettingsScreen.kt`、`LibraryScreen.kt`、`HistoryScreen.kt`
+
+### 23.9 已知限制
+
+1. **Android 动效未真机验收**：沙箱里没有模拟器，`HorizontalPager`、`BlendMode.Clear` 镂空、
+   Spring 淡出只验证到「编译通过 + 单测通过」。
+2. **蒙层只认 CSS 选择器**：目标是 `document.querySelector('.search')` 这类硬编码选择器，
+   改布局时要同步改 `STEPS`；找不到元素时该步自动跳过（不会指空气），但也不会报错提示。
+3. **引导状态按浏览器计**：换浏览器/换设备会再看一遍，这是刻意选择（属于 UX 偏好，不做服务端同步）；
+   「清空本地缓存」不会清掉它，避免用户刚清完缓存又被引导糊一脸。
+4. **两列书卡在 1024~1280 偏挤**：封面 44px + 两行文字在 460px 卡宽里刚好，再窄会截断书名，
+   所以断点定在 1024 而不是 834。

@@ -35,7 +35,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.novelstack.reader.app.AppState
+import com.novelstack.reader.app.Screen
 import com.novelstack.reader.ui.components.ApplePressable
+import com.novelstack.reader.ui.components.EmptyArt
+import com.novelstack.reader.ui.components.EmptyState
 import com.novelstack.reader.ui.components.SquircleCard
 import com.novelstack.reader.model.HistoryItem
 import kotlinx.datetime.Clock
@@ -57,10 +60,12 @@ fun HistoryScreen(state: AppState) {
     ) { pad ->
         if (items.isEmpty()) {
             Box(Modifier.fillMaxSize().padding(pad), contentAlignment = Alignment.Center) {
-                Text(
-                    "暂无阅读足迹\n读过的书会按时间倒序出现在这里",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                EmptyState(
+                    art = EmptyArt.Clock,
+                    title = "还没有阅读足迹",
+                    desc = "打开一本书读几页，位置就会记在这里；换设备登录也能看到同一份记录。",
+                    cta = "去书架挑一本",
+                    onCta = { state.screen.value = Screen.Library },
                 )
             }
         } else {

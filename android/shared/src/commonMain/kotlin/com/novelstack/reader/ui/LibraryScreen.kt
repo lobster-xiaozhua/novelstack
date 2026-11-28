@@ -1,6 +1,8 @@
 package com.novelstack.reader.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +17,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LinearProgressIndicator
@@ -25,7 +26,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -34,11 +37,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import com.novelstack.reader.app.AppState
 import com.novelstack.reader.app.Screen
 import com.novelstack.reader.db.Books
@@ -46,16 +50,22 @@ import com.novelstack.reader.ui.components.AppleCheckbox
 import com.novelstack.reader.ui.components.ApplePressable
 import com.novelstack.reader.ui.components.BottomActionBar
 import com.novelstack.reader.ui.components.CapsuleSearchField
-import com.novelstack.reader.ui.components.DestructiveTextButton
+import com.novelstack.reader.ui.components.CoachMarks
+import com.novelstack.reader.ui.components.CoachStep
+import com.novelstack.reader.ui.components.EmptyArt
+import com.novelstack.reader.ui.components.EmptyState
+import com.novelstack.reader.ui.components.IosActionSheet
 import com.novelstack.reader.ui.components.RowContent
 import com.novelstack.reader.ui.components.SelectHeader
+import com.novelstack.reader.ui.components.SheetAction
 import com.novelstack.reader.ui.components.SquircleCard
 
 /**
- * 书架：iOS 分组内嵌列表 + 长按多选。
+ * 书架：iOS 分组内嵌列表 + 长按多选 + 首次进入的蒙层引导。
  *
- * 多选态下顶部标题换成「已选择 X 项」，每行左侧滑出正圆复选框，
- * 底部弹入操作栏。点行切换选中，而不是打开书。
+ * 多选态下顶部标题换成「已选择 X 项」，每行左侧滑出正圆复选框，底部弹入操作栏。
+ * 移除缓存是危险动作，但只在多选态出现，且还要再走一次底部确认菜单——
+ * 页面上不再有任何「大红按钮」直接清数据。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,10 +76,17 @@ fun LibraryScreen(state: AppState) {
     val notice by state.notice.collectAsState()
     val error by state.error.collectAsState()
     val offline by state.offline.collectAsState()
+    val coachDone by state.coachDone.collectAsState()
 
     var query by remember { mutableStateOf("") }
     var selecting by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
+
+    // 蒙层引导：目标位置由布局自己量，不靠固定坐标（不同机型状态栏高度不一样）。
+    var searchRect by remember { mutableStateOf<Rect?>(null) }
+    var listRect by remember { mutableStateOf<Rect?>(null) }
+    var coachOpen by remember { mutableStateOf(false) }
 
     fun exitSelection() {
         selecting = false
@@ -78,7 +95,7 @@ fun LibraryScreen(state: AppState) {
 
     // 过滤结果用 derivedStateOf 缓存：滚动/多选重组时不会重复扫描整个书架。
     val filtered by remember {
-        androidx.compose.runtime.derivedStateOf {
+        derivedStateOf {
             val available = state.visibleBooks(books)
             val q = query.trim()
             available
@@ -93,6 +110,10 @@ fun LibraryScreen(state: AppState) {
     val available = state.visibleBooks(books)
     val queryText = query.trim()
     val shown = filtered
+
+    LaunchedEffect(coachDone, searchRect, shown.size) {
+        if (!coachDone && searchRect != null && shown.isNotEmpty()) coachOpen = true
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -125,13 +146,15 @@ fun LibraryScreen(state: AppState) {
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    DestructiveTextButton(
-                        text = "移除本地缓存（${selected.size}）",
-                        enabled = selected.isNotEmpty(),
-                        onClick = {
-                            state.removeLocalBooks(selected.toList())
-                            exitSelection()
-                        },
+                    Text(
+                        "移除本地缓存（${selected.size}）",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (selected.isNotEmpty()) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(Squircle.control())
+                            .clickable(enabled = selected.isNotEmpty()) { confirmRemove = true }
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                     )
                     Text(
                         "仅删本地副本",
@@ -164,51 +187,62 @@ fun LibraryScreen(state: AppState) {
             }
 
             if (!selecting) {
-                CapsuleSearchField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
-                )
-                FilterPills(
-                    allCount = available.size,
-                    favCount = available.count { it.is_favorite != 0L },
-                    favOnly = favOnly,
-                    onSelect = { state.favoritesOnly.value = it },
-                )
+                Box(modifier = Modifier.onGloballyPositioned { searchRect = it.boundsInRoot() }) {
+                    Column {
+                        CapsuleSearchField(
+                            value = query,
+                            onValueChange = { query = it },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                        )
+                        FilterPills(
+                            allCount = available.size,
+                            favCount = available.count { it.is_favorite != 0L },
+                            favOnly = favOnly,
+                            onSelect = { state.favoritesOnly.value = it },
+                        )
+                    }
+                }
             }
 
             if (shown.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        if (busy) {
-                            CircularProgressIndicator()
-                        } else {
-                            Text(
-                                when {
-                                    queryText.isNotEmpty() -> "没有匹配「$queryText」的书"
-                                    favOnly -> "还没有收藏的书"
-                                    offline -> "离线模式下没有可读的书"
-                                    else -> "书库为空"
-                                },
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                when {
-                                    queryText.isNotEmpty() -> "换个关键词，或清空搜索"
-                                    favOnly -> "在阅读页点右上角 ♥ 即可收藏"
-                                    offline -> "恢复网络后同步，或先在在线状态下缓存章节"
-                                    else -> "先在控制台上传书籍，然后点右上角「同步」"
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                    when {
+                        busy -> CircularProgressIndicator()
+                        queryText.isNotEmpty() -> EmptyState(
+                            art = EmptyArt.Doc,
+                            title = "没有匹配「$queryText」的书",
+                            desc = "换个关键词试试，或者清空搜索看全部。",
+                            cta = "清空搜索",
+                            onCta = { query = "" },
+                        )
+                        favOnly -> EmptyState(
+                            art = EmptyArt.Doc,
+                            title = "还没有收藏的书",
+                            desc = "在阅读页点右上角 ♥ 即可收藏，之后在这里能单独筛出来。",
+                            cta = "看全部",
+                            onCta = { state.favoritesOnly.value = false },
+                        )
+                        offline -> EmptyState(
+                            art = EmptyArt.Doc,
+                            title = "离线模式下没有可读的书",
+                            desc = "恢复网络后同步一次，或先在在线状态下缓存几章。",
+                            cta = "重试连接",
+                            onCta = { state.retryConnection() },
+                        )
+                        else -> EmptyState(
+                            art = EmptyArt.Shelf,
+                            title = "书架空空如也",
+                            desc = "在控制台上传书籍后点右上角「同步」，就能在这里接着读。",
+                            cta = "去发现页找书",
+                            onCta = { state.screen.value = Screen.Discover },
+                        )
                     }
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { listRect = it.boundsInRoot() },
                     contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -238,6 +272,39 @@ fun LibraryScreen(state: AppState) {
             }
         }
     }
+
+    // 首次进入：搜索框 → 列表（长按多选），两步讲完
+    val steps = buildList {
+        searchRect?.let {
+            add(CoachStep(it, "先学会搜索", "书架多了以后，敲两个字就能筛出目标；清空搜索回到全部。"))
+        }
+        listRect?.let {
+            add(CoachStep(it, "长按进入多选", "长按任意一本书进入多选，可以批量移除本地缓存；点「取消」退出。"))
+        }
+    }
+    if (coachOpen) {
+        CoachMarks(
+            visible = coachOpen,
+            steps = steps,
+            onFinish = {
+                coachOpen = false
+                state.completeCoach()
+            },
+        )
+    }
+
+    IosActionSheet(
+        visible = confirmRemove,
+        title = "移除本地缓存？",
+        message = "只删除这 ${selected.size} 本书在本机的已缓存章节；服务端文件与阅读进度不受影响，联网后还能重新下载。",
+        actions = listOf(
+            SheetAction("移除（${selected.size}）", danger = true) {
+                state.removeLocalBooks(selected.toList())
+                exitSelection()
+            },
+        ),
+        onDismiss = { confirmRemove = false },
+    )
 }
 
 /** 全部 / 收藏：胶囊分段控件。 */

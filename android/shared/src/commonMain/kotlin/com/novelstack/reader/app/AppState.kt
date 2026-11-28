@@ -46,6 +46,8 @@ sealed interface Screen {
     data object Settings : Screen
     data object Stats : Screen
     data object ServerSettings : Screen
+    /** 使用指南：图文 FAQ 折叠面板。 */
+    data object Guide : Screen
     data class Reader(val bookId: String) : Screen
     /** 内嵌 WebView 打开控制台（已带一次性登录票据）。 */
     data class WebConsole(val url: String) : Screen
@@ -140,6 +142,8 @@ class AppState(
     private val appLock: AppLockController = NoopAppLock,
     private val screenGuard: ScreenGuard = NoopScreenGuard,
     private val textActions: TextActions = NoopTextActions,
+    /** 新手引导状态（DataStore）。为 null 时按「已看过」处理，不影响老用户。 */
+    private val prefs: com.novelstack.reader.data.AppPreferences? = null,
 ) {
     private var store: ReaderRepository = storeFactory()
 
@@ -156,6 +160,12 @@ class AppState(
 
     val settings = MutableStateFlow(loadSettings())
     val tts = TtsController(api, keyStore, sinkFactory, scope)
+
+    // ---- 第十三阶段：新手引导 ----
+    /** 欢迎页是否已看完；false 时 App 顶层盖一层 HorizontalPager 欢迎页。 */
+    val onboarded = MutableStateFlow(true)
+    /** 书架/发现页的蒙层高亮引导是否已走完。 */
+    val coachDone = MutableStateFlow(true)
 
     // ---- 第八阶段：发现 / 足迹 / 收藏 / 更新 ----
     val discover = MutableStateFlow<DiscoverResponse?>(null)
@@ -285,6 +295,12 @@ class AppState(
         if (settings.value.appLockEnabled && appLock.isAvailable() && appLock.isEnrolled()) {
             locked.value = true
         }
+        // 新手引导：先把默认值设成「已看过」，读到真实值后再翻牌，
+        // 这样在 DataStore 首帧返回之前不会闪一下欢迎页。
+        prefs?.let { p ->
+            scope.launch { p.onboarded.collect { onboarded.value = it } }
+            scope.launch { p.coachDone.collect { coachDone.value = it } }
+        }
         scope.launch {
             bootstrap()
             refreshCachedIds()
@@ -299,6 +315,25 @@ class AppState(
     fun updateSettings(s: ReaderSettings) {
         settings.value = s
         store.kvPut("settings", json.encodeToString(ReaderSettings.serializer(), s))
+    }
+
+    /** 欢迎页看完（或跳过）：落盘，下次不再出现。 */
+    fun completeOnboarding() {
+        onboarded.value = true
+        scope.launch { prefs?.completeOnboarding() }
+    }
+
+    fun completeCoach() {
+        coachDone.value = true
+        scope.launch { prefs?.completeCoach() }
+    }
+
+    /** 设置 → 使用指南 → 重看新手引导。 */
+    fun resetGuides() {
+        onboarded.value = false
+        coachDone.value = false
+        notice.value = "下次进入书架会重新展示新手引导"
+        scope.launch { prefs?.resetGuides() }
     }
 
     private suspend fun bootstrap() {

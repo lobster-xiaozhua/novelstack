@@ -18,6 +18,7 @@ tinypinyin = "2.0.3"
 zxing = "4.3.0"
 biometric = "1.1.0"
 graphicsShapes = "1.0.1"
+datastore = "1.1.1"
 junit = "4.13.2"
 androidxTestJunit = "1.2.1"
 
@@ -53,6 +54,8 @@ zxing-android = { module = "com.journeyapps:zxing-android-embedded", version.ref
 androidx-media = { module = "androidx.media:media", version.ref = "androidxMedia" }
 biometric = { module = "androidx.biometric:biometric", version.ref = "biometric" }
 androidx-graphics-shapes = { module = "androidx.graphics:graphics-shapes", version.ref = "graphicsShapes" }
+# KMP 版 DataStore：引导完成标记落在这里，不进加密库（它不是隐私数据，也不该被「清空本地数据」误删）。
+androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences-core", version.ref = "datastore" }
 androidx-fragment = { module = "androidx.fragment:fragment", version = "1.8.3" }
 androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "androidxSqlite" }
 sqlcipher-android = { module = "net.zetetic:sqlcipher-android", version.ref = "sqlcipher" }

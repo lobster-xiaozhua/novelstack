@@ -1,6 +1,10 @@
 <script setup>
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { state, bookById } from '../../user/store'
+import EmptyState from '../../components/EmptyState.vue'
+
+const router = useRouter()
 
 const items = computed(() =>
   Object.values(state.progress)
@@ -23,10 +27,14 @@ function rel(iso) {
 
 <template>
   <div>
-    <div v-if="!items.length" class="empty">
-      还没有阅读记录<br />
-      <span style="font-size:12.5px">打开一本书读几页就会出现在这里</span>
-    </div>
+    <EmptyState
+      v-if="!items.length"
+      art="clock"
+      title="还没有阅读记录"
+      desc="打开一本书读几页，位置就会记在这里；换设备登录也能看到同一份记录。"
+      cta="去书架挑一本"
+      @action="router.push('/library')"
+    />
 
     <div v-else class="card groupcard" style="padding:4px">
       <router-link

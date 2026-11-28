@@ -46,6 +46,8 @@ kotlin {
             api(libs.coroutines.core)
             api(libs.serialization.json)
             implementation(libs.datetime)
+            // 引导完成标记：DataStore(KMP) + okio 路径，Android/iOS 共用同一份读写逻辑。
+            implementation(libs.androidx.datastore.preferences)
         }
         commonTest.dependencies {
             implementation(kotlin("test"))
